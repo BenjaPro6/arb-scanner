@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 # ── Configuración ──────────────────────────────────────────────
-ODDS_API_KEY    = "f5f82b230cefc8057534fe37c6470827"
+ODDS_API_KEY    = "5a715cf42edbc345c16cb66837ba41c4"
 TELEGRAM_TOKEN  = "8386508769:AAHkaxPXxEpRrv3IJc-qUZ6621PDr3E8PwY"
 TELEGRAM_CHAT_ID = "7074312345"
 
@@ -12,7 +12,7 @@ REFRESH_SECONDS     = 60       # cada cuánto escanea
 MIN_PROFIT_PERCENT  = 0.3      # ganancia mínima bruta para mostrar
 EXCHANGE_COMMISSION = 5.0      # % comisión en exchanges (Betfair, Matchbook)
 STAKE               = 100      # stake total en $
-TOP_N               = 10       # cuántas oportunidades mandar por Telegram
+TOP_N               = 999       # cuántas oportunidades mandar por Telegram
 
 # ── Casas habilitadas (whitelist) ──────────────────────────────
 TRUSTED_BOOKS = {
@@ -169,7 +169,7 @@ def send_telegram(message):
     return r.ok
 
 def build_message(opportunities):
-    top = sorted(opportunities, key=lambda x: x["net_profit"], reverse=True)[:TOP_N]
+    top = sorted(opportunities, key=lambda x: x["net_profit"], reverse=True)
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     msg = f"🎯 <b>ARB SCANNER — {len(top)} oportunidad{'es' if len(top) > 1 else ''}</b>\n"
     msg += f"🕐 {now}\n\n"
@@ -228,7 +228,7 @@ def main():
                 msg = build_message(new_arbs)
                 ok = send_telegram(msg)
                 if ok:
-                    print(f"   ✅ Telegram enviado ({len(new_arbs[:TOP_N])} oportunidades)")
+                    print(f"   ✅ Telegram enviado ({len(new_arbs)} oportunidades)")
                     for r in new_arbs:
                         sent_ids.add(r["id"])
                 else:
