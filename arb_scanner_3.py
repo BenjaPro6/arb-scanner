@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 # ── Configuración ──────────────────────────────────────────────
-ODDS_API_KEY    = "TU_API_KEY_ACA"
+ODDS_API_KEY    = "3a64d6cded4dac4e5cac12189c651a6c"
 TELEGRAM_TOKEN  = "8386508769:AAHkaxPXxEpRrv3IJc-qUZ6621PDr3E8PwY"
 TELEGRAM_CHAT_ID = "7074312345"
 
