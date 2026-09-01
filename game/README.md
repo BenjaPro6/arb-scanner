@@ -120,6 +120,25 @@ El motor está. Lo que sigue es lo que la generativa sí resuelve bien:
   directo de imagen a malla.
 - Combate a pie, entrar y salir con animación, y más tipos de misión.
 
+## Mudarlo a su propio repo
+
+Esto vive en `game/` dentro de `arb-scanner` sólo porque el GitHub App de la
+sesión donde se escribió no tenía permiso para crear repositorios. No comparte
+nada con el escáner de arbitraje y está pensado para irse a un repo propio.
+Creás el repo vacío en GitHub y después:
+
+```bash
+git clone https://github.com/BenjaPro6/arb-scanner tmp && cd tmp
+git checkout claude/complex-video-game-15yn1k
+git subtree split --prefix=game -b solo-juego     # historia sólo del juego
+cd .. && git clone tmp -b solo-juego sudestada && cd sudestada
+git remote set-url origin https://github.com/BenjaPro6/<repo-nuevo>
+git push -u origin solo-juego:main
+```
+
+`git subtree split` deja los archivos en la raíz y conserva los commits, así
+que el repo nuevo arranca limpio y con historia.
+
 ## Licencia y nombre
 
 Proyecto propio. No usa nada de Rockstar: ni marcas, ni assets, ni código.
