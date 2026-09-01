@@ -7,7 +7,9 @@ const b = await chromium.launch({
 });
 const p = await b.newPage({ viewport: { width: 1280, height: 720 } });
 const errs = [];
-p.on('console', m => { if (m.type() === 'error' && !m.text().includes('favicon')) errs.push('CONSOLE: ' + m.text()); });
+// El mensaje de consola no dice qué recurso falló; el evento de respuesta sí.
+p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|favicon/.test(m.text())) errs.push('CONSOLE: ' + m.text()); });
+p.on('response', r => { if (r.status() >= 400 && !/favicon/.test(r.url())) errs.push(`HTTP ${r.status()} ${r.url()}`); });
 p.on('pageerror', e => errs.push('PAGEERROR: ' + e.message + '\n' + (e.stack||'').split('\n').slice(0,4).join('\n')));
 
 await p.goto(url, { waitUntil: 'load' });

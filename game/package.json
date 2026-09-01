@@ -8,9 +8,10 @@
     "start": "python3 -m http.server 8123 --bind 127.0.0.1",
     "vendor": "node scripts/vendor.mjs",
     "test": "node scripts/normales.mjs && node scripts/sistemas.mjs",
-    "test:browser": "node scripts/humo.mjs http://127.0.0.1:8123/ /tmp/sudestada.png"
+    "test:browser": "node scripts/humo.mjs http://127.0.0.1:8123/ /tmp/sudestada.png",
+    "bundle": "node scripts/bundle.mjs"
   },
   "devDependencies": {
-    "three": "0.180.0"
+    "three": "0.160.0"
   }
 }

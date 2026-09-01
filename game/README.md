@@ -17,6 +17,12 @@ npm start       # sirve en http://127.0.0.1:8123
 Si ya está `vendor/three.module.js` en el repo, alcanza con servir la carpeta
 con cualquier servidor estático. No hay build, no hay bundler, no hay CDN.
 
+### O sin instalar nada
+
+`dist/sudestada.html` es el juego entero en un solo archivo de 114 KB. Se abre
+en cualquier navegador y se trae Three.js de un CDN (con un segundo CDN de
+respaldo). Se regenera con `npm run bundle`.
+
 ## Controles
 
 | Tecla | Qué hace |
@@ -101,7 +107,8 @@ src/vehicles/  catálogo, modelado, física de manejo, IA de tránsito
 src/actors/    humanoide procedural, peatones, jugador y cámara
 src/systems/   policía, economía con inflación, puntos del mapa, misiones
 src/ui/        HUD y minimapa
-scripts/       pruebas y vendorizado de Three.js
+scripts/       pruebas, vendorizado de Three.js y empaquetado a archivo único
+dist/          el juego en un solo HTML, listo para abrir sin servidor
 vitrina.html   página aparte para mirar los modelos aislados
 ```
 
