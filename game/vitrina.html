@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Sudestada — vitrina de modelos</title>
+<style>html,body{margin:0;height:100%;background:#20242c;overflow:hidden}</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head><body><script type="module">
+import * as THREE from 'three';
+import { VEHICLES } from './src/vehicles/catalog.js';
+import { buildVehicle } from './src/vehicles/model.js';
+import { buildHuman, animateHuman } from './src/actors/human.js';
+import { makeRng } from './src/core/rng.js';
+
+const r = new THREE.WebGLRenderer({ antialias: true });
+r.setSize(innerWidth, innerHeight); r.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(r.domElement);
+const sc = new THREE.Scene(); sc.background = new THREE.Color(0x2a2f38);
+sc.add(new THREE.HemisphereLight(0xcfe0ff, 0x3a3730, 1.1));
+const d = new THREE.DirectionalLight(0xfff0d8, 1.6); d.position.set(6, 12, 8); sc.add(d);
+const cam = new THREE.PerspectiveCamera(38, innerWidth/innerHeight, 0.1, 300);
+
+const rng = makeRng(7);
+const keys = Object.keys(VEHICLES);
+let x = 0; const spots = [];
+for (const k of keys) {
+  const s = VEHICLES[k];
+  const m = buildVehicle(s, s.colors[0]);
+  m.position.set(x, 0, 0); sc.add(m); spots.push({ m, k, x });
+  x += s.L + 3.2;
+}
+const h = buildHuman(rng, { shirt:'#d8d3c4', pants:'#20242c' });
+h.position.set(x, 0, 0); sc.add(h); spots.push({ m: h, k: 'persona', x });
+
+const total = x;
+let t = 0, i = 0;
+window.vitrina = { spots, focus(n){ i = n; } };
+function loop(now){
+  requestAnimationFrame(loop);
+  t = now/1000;
+  const s = spots[i % spots.length];
+  const R = 7.5;
+  cam.position.set(s.x + Math.sin(t*0.4)*R, 3.4, Math.cos(t*0.4)*R);
+  cam.lookAt(s.x, 0.85, 0);
+  animateHuman(h, 1/60, 1.4, 'walk');
+  r.render(sc, cam);
+}
+requestAnimationFrame(loop);
+</script></body></html>

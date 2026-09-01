@@ -1,0 +1,16 @@
+{
+  "name": "sudestada",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mundo abierto 3D en Buenos Aires. Motor propio sobre Three.js, sin assets externos.",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8123 --bind 127.0.0.1",
+    "vendor": "node scripts/vendor.mjs",
+    "test": "node scripts/normales.mjs && node scripts/sistemas.mjs",
+    "test:browser": "node scripts/humo.mjs http://127.0.0.1:8123/ /tmp/sudestada.png"
+  },
+  "devDependencies": {
+    "three": "0.180.0"
+  }
+}
