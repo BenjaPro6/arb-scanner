@@ -44,6 +44,7 @@ class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.35;
     document.body.appendChild(this.renderer.domElement);
+    this.input.attach(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.4, 2600);
@@ -352,6 +353,7 @@ class Game {
     this.places.update(dt);
     this.tallerCool = Math.max(0, (this.tallerCool || 0) - dt);
 
+    this.player.tick(dt);
     const p = this.player.pos;
     const solids = this.solidsNear(p.x, p.z);
 
@@ -377,7 +379,10 @@ class Game {
     if (this.ownCar.car !== pc) obstacles.push({ x: this.ownCar.car.x, z: this.ownCar.car.z });
     for (const u of this.police.units) if (u.active) obstacles.push({ x: u.car.x, z: u.car.z });
 
-    this.traffic.update(dt, { px: p.x, pz: p.z, obstacles, solidsNear: this.solidsNear });
+    this.traffic.update(dt, {
+      px: p.x, pz: p.z, obstacles, solidsNear: this.solidsNear,
+      conducido: this.player.vehicle,   // el slot que maneja el jugador, si es del tráfico
+    });
 
     // Los peatones se asustan de todo lo que se mueve rápido.
     const threats = [];

@@ -69,6 +69,7 @@ export function buildWorld(city, roads, rng) {
   }
 
   drawMarkings(roads, bank);
+  medians(roads, bank, rng);
   streetLights(roads, bank);
 
   // ---------- Materiales ----------
@@ -91,7 +92,7 @@ export function buildWorld(city, roads, rng) {
     roof: new THREE.MeshLambertMaterial({ map: TX.flat('#5a5a5c', 0.10) }),
     walk: new THREE.MeshLambertMaterial({ map: TX.sidewalk() }),
     park: new THREE.MeshLambertMaterial({ map: TX.grass() }),
-    mark: new THREE.MeshBasicMaterial({ color: 0xd6d2c4, toneMapped: false }),
+    mark: new THREE.MeshBasicMaterial({ color: 0xbdb9ac, toneMapped: false }),
     prop: new THREE.MeshLambertMaterial({ map: TX.flat('#4a4d52', 0.12) }),
     lamp: new THREE.MeshLambertMaterial({ color: 0x9a9384, emissive: new THREE.Color(0, 0, 0) }),
     tree: new THREE.MeshLambertMaterial({ map: TX.flat('#39512f', 0.16) }),
@@ -154,10 +155,7 @@ function fillBlock(b, rng, bank) {
 function scatterTrees(bank, b, rng, n) {
   for (let k = 0; k < n; k++) {
     const x = rng.range(b.x0 + 4, b.x1 - 4), z = rng.range(b.z0 + 4, b.z1 - 4);
-    const s = rng.range(0.8, 1.35);
-    bank.at('prop', x, z).box(x - 0.22 * s, z - 0.22 * s, x + 0.22 * s, z + 0.22 * s, 0.17, 3.2 * s, 2, 2, 2);
-    const r = 2.0 * s;
-    bank.at('tree', x, z).box(x - r, z - r, x + r, z + r, 3.0 * s, 6.4 * s, 4, 4, 4);
+    treeAt(bank, x, z, rng.range(0.8, 1.35));
   }
 }
 
@@ -192,10 +190,13 @@ function drawMarkings(roads, bank) {
       );
     };
     const marginT = 9 / e.len;
-    if (e.big) { put(marginT, 1 - marginT, -0.35, 0.11); put(marginT, 1 - marginT, 0.35, 0.11); }
-    else put(marginT, 1 - marginT, 0, 0.10);
+    const borde = e.median / 2;
+    if (e.median > 0) {
+      // Con cantero no va doble amarilla: va la línea de borde contra el cordón.
+      put(marginT, 1 - marginT, borde, 0.11); put(marginT, 1 - marginT, -borde, 0.11);
+    } else put(marginT, 1 - marginT, 0, 0.10);
     for (let k = 1; k < e.lanes; k++) {
-      const off = k * e.laneW;
+      const off = borde + k * e.laneW;
       const dashes = Math.floor(e.len / 9);
       for (let d = 0; d < dashes; d++) {
         const t0 = (d * 9 + 2) / e.len, t1 = (d * 9 + 6) / e.len;
@@ -228,13 +229,67 @@ function drawMarkings(roads, bank) {
   }
 }
 
+// Franja levantada a lo largo de un tramo, a cierta distancia del eje.
+function strip(mb, roads, e, o0, o1, y0, y1) {
+  const A = roads.nodes[e.a], B = roads.nodes[e.b];
+  const t = 9;                       // se corta antes de la esquina
+  if (e.len < t * 2.4) return null;
+  const nx = -e.fz, nz = e.fx;
+  const xs = [], zs = [];
+  for (const [px, pz] of [[A.x + e.fx * t, A.z + e.fz * t], [B.x - e.fx * t, B.z - e.fz * t]])
+    for (const o of [o0, o1]) { xs.push(px + nx * o); zs.push(pz + nz * o); }
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const z0 = Math.min(...zs), z1 = Math.max(...zs);
+  mb.box(x0, z0, x1, z1, y0, y1, 4, 4, 4);
+  return { x0, z0, x1, z1 };
+}
+
+// El cantero central es lo que hace que una avenida se lea como avenida.
+// Sin esto la 9 de Julio era una plancha de asfalto de 110 metros.
+function medians(roads, bank, rng) {
+  for (const e of roads.edges) {
+    if (e.median < 1.5) continue;
+    const cx = (roads.nodes[e.a].x + roads.nodes[e.b].x) / 2;
+    const cz = (roads.nodes[e.a].z + roads.nodes[e.b].z) / 2;
+    const franjas = [[-e.median / 2, e.median / 2]];
+    if (e.outer > 1.5) {
+      const borde = e.median / 2 + e.lanes * e.laneW;
+      franjas.push([borde, borde + e.outer], [-borde - e.outer, -borde]);
+    }
+    for (const [o0, o1] of franjas) {
+      const r = strip(bank.at('walk', cx, cz), roads, e, o0, o1, 0, 0.16);
+      if (!r) continue;
+      bank.at('park', cx, cz).slab(r.x0 + 0.3, r.z0 + 0.3, r.x1 - 0.3, r.z1 - 0.3, 0.17);
+      // Árboles a lo largo, y un farol cada dos.
+      const largo = Math.max(r.x1 - r.x0, r.z1 - r.z0);
+      const ancho = Math.min(r.x1 - r.x0, r.z1 - r.z0);
+      const horiz = (r.x1 - r.x0) > (r.z1 - r.z0);
+      const paso = 13;
+      for (let d = paso * 0.6; d < largo - paso * 0.4; d += paso) {
+        const x = horiz ? r.x0 + d : (r.x0 + r.x1) / 2;
+        const z = horiz ? (r.z0 + r.z1) / 2 : r.z0 + d;
+        if (ancho < 3) continue;
+        const jx = x + (rng() - 0.5) * Math.min(4, ancho - 2);
+        const jz = z + (rng() - 0.5) * Math.min(4, ancho - 2);
+        treeAt(bank, jx, jz, rng.range(0.9, 1.4));
+      }
+    }
+  }
+}
+
+function treeAt(bank, x, z, s) {
+  bank.at('prop', x, z).box(x - 0.22 * s, z - 0.22 * s, x + 0.22 * s, z + 0.22 * s, 0.17, 3.2 * s, 2, 2, 2);
+  const r = 2.0 * s;
+  bank.at('tree', x, z).box(x - r, z - r, x + r, z + r, 3.0 * s, 6.4 * s, 4, 4, 4);
+}
+
 function streetLights(roads, bank) {
   for (const e of roads.edges) {
     if (!e.big) continue;
     const A = roads.nodes[e.a];
     for (let d = 34; d < e.len - 17; d += 34) {
       for (const side of [-1, 1]) {
-        const off = (e.width / 2 - 1.0) * side;
+        const off = (e.median > 6 ? e.median / 2 - 1.2 : e.width / 2 - 1.0) * side;
         const x = A.x + e.fx * d + (-e.fz) * off;
         const z = A.z + e.fz * d + (e.fx) * off;
         bank.at('prop', x, z).box(x - 0.13, z - 0.13, x + 0.13, z + 0.13, 0.17, 8.4, 2, 6, 2);

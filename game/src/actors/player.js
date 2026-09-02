@@ -16,11 +16,17 @@ export class Player {
     this.car = null;            // instancia de Car cuando manejo
     this.enterCooldown = 0;
     this.health = 100;
-    this.camYaw = 0; this.camDist = 8; this.camHeight = 3.2;
+    this.camYaw = 0; this.camPitch = 0.44; this.camDist = 8; this.camZoom = 1; this.lookIdle = 0;
     this.shake = 0;
   }
 
   get pos() { return this.mode === 'drive' ? { x: this.car.x, z: this.car.z } : { x: this.x, z: this.z }; }
+
+  // Temporizadores que corren en los dos modos. Sin esto, enterCooldown se
+  // quedaba en 0.4 para siempre y nunca más podías bajarte del auto.
+  tick(dt) {
+    this.enterCooldown = Math.max(0, this.enterCooldown - dt);
+  }
   get speed() { return this.mode === 'drive' ? this.car.speed : Math.hypot(this.vx, this.vz); }
 
   updateFoot(dt, input, camAngle, solids) {
@@ -29,8 +35,9 @@ export class Player {
     const maxV = sprint ? 5.6 : 2.4;
     let want = 0, has = false;
     if (ax || ay) {
-      // Movimiento relativo a la cámara, como corresponde en tercera persona.
-      want = Math.atan2(ax, ay) + camAngle;
+      // Relativo a la cámara: W va hacia donde mirás, A y D caminan de costado.
+      // El eje X va negado porque la derecha de la cámara es (-cos, sin).
+      want = Math.atan2(-ax, ay) + camAngle;
       has = true;
     }
     const accel = 22;
@@ -93,43 +100,50 @@ export class Player {
     this.enterCooldown = 0.4;
   }
 
-  // Cámara de persecución con adelanto por velocidad: es la mitad de la
-  // sensación de manejo. Mira hacia donde vas, no hacia donde estás.
+  // Cámara en órbita, movida con el mouse. Antes seguía sola al personaje y
+  // el personaje seguía a la cámara: esa realimentación era la que te hacía
+  // girar 360 grados solo al caminar.
   updateCamera(camera, dt, input) {
     const p = this.pos;
-    let targetYaw, dist, height, look;
-    if (this.mode === 'drive') {
-      const c = this.car;
-      const v = c.speed;
-      // Al ir marcha atrás, la cámara no se da vuelta: sigue el morro.
-      targetYaw = c.yaw;
-      dist = lerp(8.4, 13.6, clamp(v / 34, 0, 1)) * (c.spec.L / 4.6);
-      height = lerp(4.4, 5.6, clamp(v / 34, 0, 1)) * (c.spec.H / 1.45);
-      look = 3.4 + v * 0.34;
-    } else {
-      targetYaw = this.yaw;
-      dist = 5.6; height = 3.4; look = 2.4;
-    }
-    const k = this.mode === 'drive' ? 4.2 : 6.5;
-    this.camYaw += angDelta(this.camYaw, targetYaw) * Math.min(1, dt * k);
-    this.camDist = lerp(this.camDist, dist, Math.min(1, dt * 4));
-    this.camHeight = lerp(this.camHeight, height, Math.min(1, dt * 4));
+    const m = input.consumeMouse ? input.consumeMouse() : { dx: 0, dy: 0, wheel: 0 };
 
-    const bx = p.x - Math.sin(this.camYaw) * this.camDist;
-    const bz = p.z - Math.cos(this.camYaw) * this.camDist;
-    let sh = 0;
-    if (this.shake > 0) {
-      sh = this.shake; this.shake = Math.max(0, this.shake - dt * 2.2);
+    const sens = 0.0024;
+    if (m.dx || m.dy) {
+      this.camYaw -= m.dx * sens;
+      this.camPitch = clamp(this.camPitch + m.dy * sens, -0.42, 1.05);
+      this.lookIdle = 0;
+    } else {
+      this.lookIdle = (this.lookIdle || 0) + dt;
     }
+    if (input.is && input.is('camleft')) { this.camYaw += dt * 2.0; this.lookIdle = 0; }
+    if (input.is && input.is('camright')) { this.camYaw -= dt * 2.0; this.lookIdle = 0; }
+    if (m.wheel) this.camZoom = clamp((this.camZoom || 1) + m.wheel * 0.12, 0.6, 2.0);
+
+    const driving = this.mode === 'drive';
+    // Manejando, si soltás el mouse la cámara vuelve sola atrás del auto.
+    if (driving && this.lookIdle > 1.1) {
+      const k = Math.min(1, dt * 2.2);
+      this.camYaw += angDelta(this.camYaw, this.car.yaw) * k;
+      this.camPitch += (0.44 - this.camPitch) * k;
+    }
+
+    const v = driving ? this.car.speed : 0;
+    const dist = (driving
+      ? lerp(8.8, 13.2, clamp(v / 34, 0, 1)) * (this.car.spec.L / 4.6)
+      : 5.0) * (this.camZoom || 1);
+    this.camDist = lerp(this.camDist, dist, Math.min(1, dt * 4));
+
+    const ty = driving ? 1.25 : 1.35;
+    const cp = Math.cos(this.camPitch), sp = Math.sin(this.camPitch);
+    let sh = 0;
+    if (this.shake > 0) { sh = this.shake; this.shake = Math.max(0, this.shake - dt * 2.2); }
+
     camera.position.set(
-      bx + (Math.random() - 0.5) * sh * 1.2,
-      this.camHeight + 0.6 + (Math.random() - 0.5) * sh * 0.8,
-      bz + (Math.random() - 0.5) * sh * 1.2
+      p.x - Math.sin(this.camYaw) * this.camDist * cp + (Math.random() - 0.5) * sh * 1.2,
+      Math.max(0.9, ty + this.camDist * sp) + (Math.random() - 0.5) * sh * 0.8,
+      p.z - Math.cos(this.camYaw) * this.camDist * cp + (Math.random() - 0.5) * sh * 1.2
     );
-    camera.lookAt(
-      p.x + Math.sin(this.camYaw) * look,
-      this.mode === 'drive' ? 1.5 : 1.2,
-      p.z + Math.cos(this.camYaw) * look
-    );
+    camera.lookAt(p.x, ty, p.z);
   }
+
 }

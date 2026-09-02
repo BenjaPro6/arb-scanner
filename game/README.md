@@ -25,13 +25,18 @@ respaldo). Se regenera con `npm run bundle`.
 
 ## Controles
 
-| Tecla | Qué hace |
+| Control | Qué hace |
 |---|---|
-| `W A S D` / flechas | manejar o caminar |
+| `Mouse` | mirar. Hacé clic para capturar el puntero; si el navegador no deja (pasa dentro de un iframe), mantené apretado el botón y arrastrá |
+| `W A S D` | a pie camina relativo a la cámara, también de costado; al volante acelera, frena y dobla |
 | `Espacio` | freno de mano (con esto derrapás) |
 | `F` | subir o bajar del auto |
 | `Shift` | correr a pie |
+| `Rueda` | acercar y alejar la cámara |
+| `Q` `E` | girar la cámara sin mouse |
 | `H` | vender dólares en la cueva |
+
+Manejando, si soltás el mouse la cámara vuelve sola atrás del auto.
 
 Los círculos del mapa: **naranja** = laburo, **verde** = cueva, **azul** = taller.
 

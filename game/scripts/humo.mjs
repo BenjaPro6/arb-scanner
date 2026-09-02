@@ -80,7 +80,7 @@ const drive = await p.evaluate(() => {
 const cam = await p.evaluate(() => {
   const g = window.game, c = g.camera, q = g.player.pos;
   return { camY: +c.position.y.toFixed(2), dist: +Math.hypot(c.position.x-q.x, c.position.z-q.z).toFixed(2),
-           camDist: +g.player.camDist.toFixed(2), camHeight: +g.player.camHeight.toFixed(2) };
+           camDist: +g.player.camDist.toFixed(2), camPitch: +g.player.camPitch.toFixed(2) };
 });
 console.log('\n=== CAMARA ===');
 for (const [k,v] of Object.entries(cam)) console.log('  ' + k.padEnd(16), v);

@@ -1,6 +1,7 @@
 import { CFG } from '../core/config.js';
 
 const SIDEWALK = 2.6;
+const LANE_W = 3.4;      // ancho de carril real, no el ancho total dividido
 
 // Grafo de calles sobre la grilla de la ciudad.
 // Un tramo (edge) va de un nodo a otro; cada tramo tiene manos y carriles.
@@ -46,10 +47,17 @@ export class RoadNet {
     const A = this.nodes[a], B = this.nodes[b];
     const dx = B.x - A.x, dz = B.z - A.z;
     const len = Math.hypot(dx, dz);
-    const lanes = width >= CFG.MEGA ? 4 : width >= CFG.AVENUE ? 2 : 1;
-    const laneW = (width - SIDEWALK * 2) / (lanes * 2);
+    // Los carriles miden lo que miden. El sobrante no se reparte entre ellos:
+    // se convierte en cantero central y, en la 9 de Julio, también en las
+    // franjas verdes de los costados. Antes cada carril de la 9 medía 13 m.
+    const lanes = width >= CFG.MEGA ? 7 : width >= CFG.AVENUE ? 3 : 1;
+    const asfalto = lanes * 2 * LANE_W;
+    const sobra = Math.max(0, width - SIDEWALK * 2 - asfalto);
+    const median = width >= CFG.MEGA ? sobra * 0.6 : width >= CFG.AVENUE ? sobra : 0;
+    const outer = width >= CFG.MEGA ? (sobra - median) / 2 : 0;
+    const laneW = LANE_W;
     const e = {
-      id: this.edges.length, a, b, axis, width, lanes, laneW, len,
+      id: this.edges.length, a, b, axis, width, lanes, laneW, len, median, outer,
       fx: dx / len, fz: dz / len,
       rx: -dz / len, rz: dx / len,        // derecha del sentido a->b
       big: width >= CFG.AVENUE,
@@ -65,7 +73,7 @@ export class RoadNet {
   lanePos(e, dir, lane, t, out = { x: 0, z: 0 }) {
     const A = this.nodes[dir > 0 ? e.a : e.b];
     const fx = e.fx * dir, fz = e.fz * dir;
-    const off = (0.5 + lane) * e.laneW;
+    const off = e.median / 2 + (0.5 + lane) * e.laneW;
     out.x = A.x + fx * e.len * t + (-fz) * off;
     out.z = A.z + fz * e.len * t + (fx) * off;
     return out;

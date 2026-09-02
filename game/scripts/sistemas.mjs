@@ -6,8 +6,10 @@ import { RoadNet } from '../src/world/roads.js';
 import { Traffic } from '../src/vehicles/traffic.js';
 import { Police } from '../src/systems/police.js';
 import { Economy } from '../src/systems/economy.js';
+import { Player } from '../src/actors/player.js';
 import { makeRng } from '../src/core/rng.js';
 import { CFG } from '../src/core/config.js';
+import { angDelta } from '../src/core/utils.js';
 
 let fallos = 0;
 const ok = (cond, msg, extra = '') => {
@@ -114,6 +116,79 @@ console.log('\n=== POLICÍA ===');
   const world2 = { px: px + 4000, pz: pz + 4000, playerCar: null, playerSpeed: 0, solidsNear };
   for (let i = 0; i < 60 * 90; i++) pol.update(DT, world2);
   ok(pol.heat < 2.5, 'la estrella baja si te escondés', `heat ${pol.heat.toFixed(2)}`);
+}
+
+console.log('\n=== JUGADOR Y VEHÍCULO ===');
+{
+  // Estas dos pruebas faltaban y por eso el juego salió injugable: se podía
+  // subir al auto pero no bajarse, y el acelerador no hacía nada.
+  const t = new Traffic(scene, city, roads, makeRng(21));
+  const px = city.center.x, pz = city.center.z;
+  const mundo = { px, pz, obstacles: [], solidsNear, conducido: null };
+  for (let i = 0; i < 60 * 4; i++) t.update(DT, mundo);
+
+  const slot = t.cars.find(c => c.active);
+  const jugador = new Player(scene, makeRng(2), slot.car.x, slot.car.z);
+
+  // Subirse: es lo que hace tryEnterExit al robar un auto del tráfico.
+  slot.mode = 'own';
+  jugador.enter(slot, slot.car);
+  ok(jugador.mode === 'drive', 'te podés subir a un auto del tráfico');
+
+  // Acelerar tiene que mover el auto. Antes la IA le sobrescribía la posición.
+  const teclas = { axisY: () => 1, axisX: () => 0, is: () => false };
+  const v0 = slot.car.speed;
+  for (let i = 0; i < 60 * 3; i++) {
+    jugador.tick(DT);
+    jugador.updateDrive(DT, teclas, []);
+    t.update(DT, { ...mundo, conducido: slot });
+  }
+  ok(slot.car.speed > v0 + 4, 'el acelerador del jugador mueve el auto robado',
+     `${(slot.car.kmh).toFixed(0)} km/h`);
+  ok(slot.car.throttle === 1, 'el acelerador no lo pisa la IA del tránsito');
+
+  // Frenar y bajarse. El cooldown tiene que haber expirado hace rato.
+  ok(jugador.enterCooldown === 0, 'el cooldown de subir/bajar efectivamente baja');
+  const parar = { axisY: () => -1, axisX: () => 0, is: () => false };
+  const antes = slot.car.vLong;
+  for (let i = 0; i < 60 * 2; i++) {
+    jugador.tick(DT); jugador.updateDrive(DT, parar, []);
+    t.update(DT, { ...mundo, conducido: slot });
+  }
+  // Se mide la velocidad longitudinal, no el módulo: pasados unos segundos la
+  // misma tecla mete marcha atrás, y eso está bien.
+  ok(slot.car.vLong < antes * 0.35, 'el freno frena de verdad',
+     `${(antes * 3.6).toFixed(0)} -> ${(slot.car.vLong * 3.6).toFixed(0)} km/h`);
+  for (let i = 0; i < 60 * 4; i++) {
+    jugador.tick(DT); jugador.updateDrive(DT, parar, []);
+    t.update(DT, { ...mundo, conducido: slot });
+  }
+  ok(slot.car.vLong < 0, 'seguir apretando mete marcha atrás',
+     `${(slot.car.vLong * 3.6).toFixed(0)} km/h`);
+  jugador.exit();
+  ok(jugador.mode === 'foot', 'te podés bajar del auto');
+
+  // Caminar no puede hacerte girar solo: la dirección se toma de la cámara,
+  // que ahora es independiente del personaje.
+  const cam = jugador.camYaw;
+  const adelante = { axisY: () => 1, axisX: () => 0, is: () => false };
+  for (let i = 0; i < 60 * 3; i++) { jugador.tick(DT); jugador.updateFoot(DT, adelante, cam, []); }
+  const giro = Math.abs(angDelta(jugador.yaw, cam));
+  ok(giro < 0.25, 'caminando derecho no gira solo', `desvío ${(giro * 57.3).toFixed(1)}°`);
+  ok(Math.hypot(jugador.x - px, jugador.z - pz) > 3, 'caminar te mueve de lugar');
+
+  // A y D tienen que caminar de costado respecto de la cámara, no girarla.
+  // Con camYaw = 0 se mira hacia +Z, y la derecha de la cámara es -X.
+  const j2 = new Player(scene, makeRng(4), 0, 0);
+  const derecha = { axisX: () => 1, axisY: () => 0, is: () => false };
+  for (let i = 0; i < 60; i++) j2.updateFoot(DT, derecha, 0, []);
+  ok(j2.x < -1 && Math.abs(j2.z) < 0.5, 'la D camina hacia la derecha de la cámara',
+     `x=${j2.x.toFixed(2)} z=${j2.z.toFixed(2)}`);
+  const j3 = new Player(scene, makeRng(4), 0, 0);
+  const adelante2 = { axisX: () => 0, axisY: () => 1, is: () => false };
+  for (let i = 0; i < 60; i++) j3.updateFoot(DT, adelante2, 0, []);
+  ok(j3.z > 1 && Math.abs(j3.x) < 0.5, 'la W camina hacia donde mira la cámara',
+     `x=${j3.x.toFixed(2)} z=${j3.z.toFixed(2)}`);
 }
 
 console.log('\n=== GRAFO DE CALLES ===');

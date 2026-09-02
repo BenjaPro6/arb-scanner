@@ -75,9 +75,15 @@ export class Traffic {
       if (!t.active) { if (this.rng.chance(0.5)) this.spawn(t, px, pz); continue; }
       const c = t.car;
       const far = Math.hypot(c.x - px, c.z - pz);
-      if (far > CFG.DESPAWN_RADIUS) { t.active = false; t.mesh.visible = false; continue; }
+      if (far > CFG.DESPAWN_RADIUS && t !== world.conducido) {
+        t.active = false; t.mesh.visible = false; continue;
+      }
 
-      if (t.mode === 'loose') { this.stepLoose(t, dt, world); }
+      // El auto que maneja el jugador NO lo toca la IA: su física ya la corrió
+      // el Player. Antes stepLane le sobrescribía posición y velocidad desde el
+      // carril, así que el acelerador del jugador no hacía nada.
+      if (t === world.conducido) { t.v = c.speed; }
+      else if (t.mode === 'loose') { this.stepLoose(t, dt, world); }
       else { this.stepLane(t, dt, world, obstacles); }
 
       const m = t.mesh;
@@ -88,7 +94,7 @@ export class Traffic {
         w.rotation.x = c.wheelSpin;
         if (w.userData.steer) w.rotation.y = c.steer * 0.4;
       }
-      for (const b of wd.brakes) b.visible = t.mode === 'lane' && t.decel > 1.2;
+      for (const b of wd.brakes) b.visible = t === world.conducido ? c.throttle < 0 : (t.mode === 'lane' && t.decel > 1.2);
     }
   }
 

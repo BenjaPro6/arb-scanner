@@ -55,10 +55,10 @@ export class Hud {
       <div class="panel" id="mision" style="display:none"><div class="t" id="v-mision"></div></div>
       <div class="panel" id="aviso"><span id="v-aviso"></span></div>
       <div id="ayuda">
-        <kbd>W A S D</kbd> manejar · <kbd>Espacio</kbd> freno de mano<br>
-        <kbd>F</kbd> subir / bajar del auto · <kbd>Shift</kbd> correr<br>
-        Entrá al círculo naranja para agarrar laburo.<br>
-        Verde = cueva (cambiás guita) · Azul = taller (te limpia la cana)
+        <kbd>Mouse</kbd> mirar · <kbd>W A S D</kbd> caminar y manejar<br>
+        <kbd>Espacio</kbd> freno de mano · <kbd>F</kbd> subir / bajar · <kbd>Shift</kbd> correr<br>
+        <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> girar cámara sin mouse<br>
+        Naranja = laburo · Verde = cueva (cambiás guita) · Azul = taller
       </div>`;
     document.body.appendChild(root);
     this.el = (id) => document.getElementById(id);
