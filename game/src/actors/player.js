@@ -16,6 +16,15 @@ export class Player {
     this.car = null;            // instancia de Car cuando manejo
     this.enterCooldown = 0;
     this.health = 100;
+    // Pistola en la mano derecha: sólo se ve cuando estás armado.
+    this.gun = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.13, 0.26),
+      new THREE.MeshLambertMaterial({ color: 0x22252b })
+    );
+    this.gun.position.set(0.30, 1.06, 0.16);
+    this.gun.visible = false;
+    this.mesh.add(this.gun);
+
     this.camYaw = 0; this.camPitch = 0.44; this.camDist = 8; this.camZoom = 1; this.lookIdle = 0;
     this.shake = 0;
   }

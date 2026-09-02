@@ -165,6 +165,8 @@ const MAP = {
   KeyF: 'use',
   KeyQ: 'camleft', KeyE: 'camright',
   KeyH: 'horn',
+  ControlLeft: 'fire', ControlRight: 'fire',   // alternativa al clic
+  KeyR: 'recargar',
   KeyC: 'camera',
 };
 
@@ -195,14 +197,22 @@ class Input {
   attach(canvas) {
     this.canvas = canvas;
     canvas.style.cursor = 'crosshair';
+    // Botón izquierdo dispara. Para mirar está el mouse con el puntero
+    // capturado; si el navegador no lo permite (pasa dentro de un iframe),
+    // se mira arrastrando con el botón derecho.
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { this.dragging = true; return; }
       if (e.button !== 0) return;
-      this.dragging = true;
       if (!this.locked && canvas.requestPointerLock) {
         try { canvas.requestPointerLock(); } catch (_) { /* iframe sin permiso */ }
       }
+      this.down.add('fire'); this.pressed.add('fire');
     });
-    addEventListener('mouseup', () => { this.dragging = false; });
+    addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.dragging = false;
+      if (e.button === 0) this.down.delete('fire');
+    });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
       canvas.style.cursor = this.locked ? 'none' : 'crosshair';
@@ -1910,6 +1920,15 @@ class Player {
     this.car = null;            // instancia de Car cuando manejo
     this.enterCooldown = 0;
     this.health = 100;
+    // Pistola en la mano derecha: sólo se ve cuando estás armado.
+    this.gun = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.13, 0.26),
+      new THREE.MeshLambertMaterial({ color: 0x22252b })
+    );
+    this.gun.position.set(0.30, 1.06, 0.16);
+    this.gun.visible = false;
+    this.mesh.add(this.gun);
+
     this.camYaw = 0; this.camPitch = 0.44; this.camDist = 8; this.camZoom = 1; this.lookIdle = 0;
     this.shake = 0;
   }
@@ -2115,7 +2134,8 @@ class Economy {
 const TYPES = {
   cueva:  { color: 0x35d07f, label: 'Cueva', r: 3.4 },
   taller: { color: 0x3aa0ff, label: 'Taller', r: 4.2 },
-  laburo: { color: 0xffb020, label: 'Laburo', r: 3.6 },
+  laburo: { color: 0xffb020, label: 'Laburo', r: 4.6 },
+  armeria:{ color: 0xc0392b, label: 'Armería', r: 3.6 },
   meta:   { color: 0xff5470, label: 'Destino', r: 4.0 },
 };
 
@@ -2130,7 +2150,15 @@ class Places {
       this.add('cueva', city.randomBlock(b => b.district === 'microcentro' || b.district === 'once'));
     for (let i = 0; i < 5; i++)
       this.add('taller', city.randomBlock(b => b.kind === 'edificado'));
-    this.laburo = this.add('laburo', city.randomBlock(b => b.kind === 'edificado'));
+    // El laburo arranca al lado del jugador. Antes caía en una manzana al azar
+    // de 676 en 3,2 km² y no había forma humana de encontrarlo.
+    const cerca = city.blockAt(city.center.x + 60, city.center.z + 110)
+      || city.randomBlock(b => b.kind === 'edificado');
+    this.laburo = this.add('laburo', cerca);
+    for (let i = 0; i < 3; i++)
+      this.add('armeria', city.randomBlock(b => b.district === 'once' || b.district === 'boca'));
+    this.armeriaCerca = this.add('armeria',
+      city.blockAt(city.center.x - 130, city.center.z + 60) || city.randomBlock(b => b.kind === 'edificado'));
   }
 
   add(type, block, x, z) {
@@ -2174,6 +2202,146 @@ class Places {
     for (const p of this.list) p.mesh.rotation.y += dt * 0.6;
   }
 }
+
+// ===== systems/weapons.js =====
+// Tiro con hitscan: se dispara un rayo desde el pecho hacia donde mira la
+// cámara y se busca el blanco más cercano dentro de un cono angosto, sin
+// atravesar edificios. El trazador y el fogonazo son geometría propia.
+const ALCANCE = 70;
+const CONO = Math.cos(0.045);      // ~2.6 grados de tolerancia
+const PISTOLA = { nombre: 'Pistola', dano: 34, cadencia: 0.26, cargador: 12, precio: 26000, bala: 380 };
+
+class Weapons {
+  constructor(scene, game) {
+    this.g = game;
+    this.armado = false;
+    this.balas = 0;
+    this.enCargador = 0;
+    this.cool = 0;
+    this.recarga = 0;
+
+    // Trazadores reutilizables: una tira de líneas con vida corta.
+    this.trazas = [];
+    const mat = new THREE.LineBasicMaterial({ color: 0xffd489, transparent: true, opacity: 0.9 });
+    for (let i = 0; i < 12; i++) {
+      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const l = new THREE.Line(g, mat.clone());
+      l.visible = false; scene.add(l);
+      this.trazas.push({ l, t: 0 });
+    }
+    this.fogonazo = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 6, 5),
+      new THREE.MeshBasicMaterial({ color: 0xffe6a0, transparent: true, opacity: 0.95, toneMapped: false })
+    );
+    this.fogonazo.visible = false;
+    scene.add(this.fogonazo);
+    this.flashT = 0;
+  }
+
+  comprar(economia) {
+    if (!this.armado) {
+      if (!economia.charge(PISTOLA.precio)) return 'sin plata';
+      this.armado = true; this.enCargador = PISTOLA.cargador; this.balas = 12;
+      return 'comprada';
+    }
+    const faltan = 24;
+    if (!economia.charge(PISTOLA.bala * faltan)) return 'sin plata';
+    this.balas += faltan;
+    return 'municion';
+  }
+
+  get municionTotal() { return this.enCargador + this.balas; }
+
+  // ¿Choca el segmento contra alguna manzana? Si sí, no hay tiro limpio.
+  bloqueado(x0, z0, x1, z1, solidsNear) {
+    const pasos = 14;
+    for (let i = 1; i <= pasos; i++) {
+      const t = i / pasos;
+      const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
+      for (const b of solidsNear(x, z))
+        if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) return true;
+    }
+    return false;
+  }
+
+  disparar(dt) {
+    const g = this.g, p = g.player;
+    this.cool = Math.max(0, this.cool - dt);
+    if (!this.armado || this.cool > 0 || p.mode !== 'foot') return null;
+    if (this.enCargador <= 0) {
+      if (this.balas <= 0) return 'sin balas';
+      const carga = Math.min(PISTOLA.cargador, this.balas);
+      this.enCargador = carga; this.balas -= carga; this.cool = 1.1;
+      return 'recargando';
+    }
+    this.enCargador--; this.cool = PISTOLA.cadencia;
+
+    const dx = Math.sin(p.camYaw), dz = Math.cos(p.camYaw);
+    const ox = p.x + dx * 0.4, oz = p.z + dz * 0.4, oy = 1.35;
+    p.yaw = p.camYaw;                       // el personaje encara hacia donde tira
+
+    let mejor = null, mejorD = ALCANCE;
+    const mirar = (tx, tz, obj, tipo) => {
+      const vx = tx - ox, vz = tz - oz;
+      const d = Math.hypot(vx, vz);
+      if (d < 0.8 || d > ALCANCE) return;
+      if ((vx / d) * dx + (vz / d) * dz < CONO) return;
+      if (d < mejorD) { mejorD = d; mejor = { obj, tipo, x: tx, z: tz }; }
+    };
+    for (const ped of g.peds.list)
+      if (ped.active && ped.state !== 'down') mirar(ped.x, ped.z, ped, 'peaton');
+    for (const u of g.police.units)
+      if (u.active) mirar(u.car.x, u.car.z, u, 'cana');
+    for (const t of g.traffic.cars)
+      if (t.active && t !== p.vehicle) mirar(t.car.x, t.car.z, t, 'auto');
+
+    if (mejor && this.bloqueado(ox, oz, mejor.x, mejor.z, g.solidsNear)) mejor = null;
+
+    const fin = mejor ? { x: mejor.x, z: mejor.z } : { x: ox + dx * ALCANCE, z: oz + dz * ALCANCE };
+    this.traza(ox, oy, oz, fin.x, mejor ? 1.1 : 1.4, fin.z);
+    this.fogonazo.position.set(ox + dx * 0.5, oy, oz + dz * 0.5);
+    this.fogonazo.visible = true; this.flashT = 0.05;
+    g.audio.bang(7);
+
+    if (!mejor) return 'tiro';
+    if (mejor.tipo === 'peaton') {
+      mejor.obj.state = 'down'; mejor.obj.downTime = 0;
+      g.police.crime('atropello', 1.4);
+      return 'peaton';
+    }
+    if (mejor.tipo === 'cana') {
+      mejor.obj.vida = (mejor.obj.vida ?? 100) - PISTOLA.dano;
+      g.police.crime('chocarPatrullero', 0.5);
+      if (mejor.obj.vida <= 0) { g.police.retire(mejor.obj); g.police.crime('chocarPatrullero', 1.2); return 'cana'; }
+      return 'tiro';
+    }
+    mejor.obj.car.damage = Math.min(100, mejor.obj.car.damage + 12);
+    g.traffic.knock(mejor.obj);
+    return 'auto';
+  }
+
+  update(dt) {
+    this.flashT -= dt;
+    if (this.flashT <= 0) this.fogonazo.visible = false;
+    for (const tr of this.trazas) {
+      if (!tr.l.visible) continue;
+      tr.t -= dt;
+      tr.l.material.opacity = clamp(tr.t / 0.09, 0, 1) * 0.9;
+      if (tr.t <= 0) tr.l.visible = false;
+    }
+  }
+
+  traza(x0, y0, z0, x1, y1, z1) {
+    const tr = this.trazas.find(t => !t.l.visible) || this.trazas[0];
+    const pos = tr.l.geometry.attributes.position;
+    pos.setXYZ(0, x0, y0, z0); pos.setXYZ(1, x1, y1, z1);
+    pos.needsUpdate = true;
+    tr.l.geometry.computeBoundingSphere();
+    tr.l.visible = true; tr.t = 0.09;
+  }
+}
+
+const ARMA = PISTOLA;
 
 // ===== systems/missions.js =====
 // Misiones como máquina de estados. Cada una define arranque, chequeo por
@@ -2348,6 +2516,7 @@ class Police {
     this.unseen = 0;
     this.blinker = 0;
     this.busted = 0;
+    this.disparos = [];   // tiros de la cana pendientes de resolver este frame
   }
 
   crime(kind, mult = 1) {
@@ -2387,6 +2556,7 @@ class Police {
         this.units.push(u);
       }
       u.car = new Car(spec, p.x, p.z, this.roads.laneHeading(hit.e, dir));
+      u.vida = 100; u.tiro = this.rng.range(0.4, 1.6);
       u.active = true; u.mesh.visible = true; u.path = null; u.repath = 0;
       u.force = kind === 'bonaerense' ? 'bonaerense' : 'federal';
       return u;
@@ -2397,6 +2567,7 @@ class Police {
   update(dt, world) {
     const { px, pz, playerCar, playerSpeed, solidsNear } = world;
     this.blinker += dt;
+    this.disparos.length = 0;
 
     // Enfriamiento: si nadie te ve, la estrella baja sola.
     let seen = false;
@@ -2477,10 +2648,23 @@ class Police {
         m.userData.beacon.material.color.setHex(on ? 0xff2020 : 0x2040ff);
       }
 
-      // Te arrestan si estás a pie, quieto y pegado a un patrullero.
-      if (!playerCar && d < 4.5 && playerSpeed < 2 && c.speed < 3) this.busted += dt;
+      // Te arrestan si estás quieto y te tienen encima: a pie o con el auto
+      // parado. Antes sólo contaba a pie, así que arriba del auto nunca
+      // pasaba nada por más que te rodearan.
+      const quieto = playerSpeed < (playerCar ? 3.5 : 2);
+      if (d < (playerCar ? 7 : 4.8) && quieto && c.speed < 4) this.busted += dt;
+
+      // De dos estrellas para arriba te tiran si estás a pie y cerca.
+      if (!playerCar && this.wanted() >= 2 && d < 34) {
+        u.tiro -= dt;
+        if (u.tiro <= 0) {
+          u.tiro = this.rng.range(0.7, 1.8);
+          this.disparos.push({ x: c.x, z: c.z, tx: px, tz: pz, dano: this.rng.range(5, 11) });
+        }
+      }
     }
-    if (!this.units.some(u => u.active && Math.hypot(u.car.x - px, u.car.z - pz) < 6)) this.busted = 0;
+    if (!this.units.some(u => u.active && Math.hypot(u.car.x - px, u.car.z - pz) < (world.playerCar ? 8 : 6)))
+      this.busted = 0;
   }
 
   activeCars() { return this.units.filter(u => u.active).map(u => u.car); }
@@ -2511,7 +2695,18 @@ const CSS = `
 #mision{bottom:16px;left:50%;transform:translateX(-50%);text-align:center;max-width:520px}
 #mision .t{font-weight:700;font-size:14px}
 #aviso{bottom:74px;left:50%;transform:translateX(-50%);text-align:center;max-width:560px;font-size:14px;opacity:0;transition:opacity .25s;background:rgba(10,12,16,.7)}
-#ayuda{position:absolute;bottom:16px;left:14px;background:rgba(10,12,16,.42);border-radius:8px;padding:8px 10px;font-size:11px;opacity:.55;max-width:260px;line-height:1.6}
+#objetivo{position:absolute;bottom:104px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 14px}
+#objetivo svg{display:block}
+#objetivo .d{font-variant-numeric:tabular-nums;font-weight:700}
+#objetivo .q{opacity:.6;font-size:12px}
+#arma{position:absolute;bottom:112px;right:14px;text-align:right;padding:8px 12px;display:none}
+#arma .m{font-size:22px;font-weight:750;font-variant-numeric:tabular-nums}
+#arma .m i{font-style:normal;opacity:.5;font-size:14px}
+#preso{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;padding:14px 22px;display:none}
+#preso b{font-size:18px;letter-spacing:1px}
+#preso .b{height:5px;width:200px;background:rgba(255,255,255,.18);border-radius:3px;margin-top:8px;overflow:hidden}
+#preso .b i{display:block;height:100%;background:#ff5470;width:0%}
+#ayuda{position:absolute;bottom:16px;left:14px;background:rgba(10,12,16,.42);border-radius:8px;padding:9px 12px;font-size:11px;opacity:.6;max-width:350px;line-height:1.75}
 #reloj{top:14px;left:50%;transform:translateX(-50%);font-variant-numeric:tabular-nums;opacity:.85}
 kbd{background:rgba(255,255,255,.14);border-radius:3px;padding:1px 4px;font:inherit;font-size:10px}
 `;
@@ -2541,11 +2736,23 @@ class Hud {
       </div>
       <div class="panel" id="mision" style="display:none"><div class="t" id="v-mision"></div></div>
       <div class="panel" id="aviso"><span id="v-aviso"></span></div>
+      <div class="panel" id="objetivo">
+        <svg width="22" height="22" viewBox="-11 -11 22 22" id="v-flecha">
+          <path d="M0 -9 L6 7 L0 3.4 L-6 7 Z" fill="#ffb020"></path>
+        </svg>
+        <div><div class="d" id="v-dist">—</div><div class="q" id="v-que">—</div></div>
+      </div>
+      <div class="panel" id="arma">
+        <div class="q" id="v-arma">Pistola</div>
+        <div class="m"><span id="v-cargador">0</span><i>/<span id="v-balas">0</span></i></div>
+      </div>
+      <div class="panel" id="preso"><b id="v-preso">TE ESTÁN POR AGARRAR</b><div class="b"><i id="v-presobar"></i></div></div>
       <div id="ayuda">
         <kbd>Mouse</kbd> mirar · <kbd>W A S D</kbd> caminar y manejar<br>
         <kbd>Espacio</kbd> freno de mano · <kbd>F</kbd> subir / bajar · <kbd>Shift</kbd> correr<br>
-        <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> girar cámara sin mouse<br>
-        Naranja = laburo · Verde = cueva (cambiás guita) · Azul = taller
+        <kbd>Clic izq</kbd> disparar · <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> cámara<br>
+        Naranja = laburo · Verde = cueva · Azul = taller · Rojo = armería<br>
+        Seguí la flecha naranja para agarrar la primera changa.
       </div>`;
     document.body.appendChild(root);
     this.el = (id) => document.getElementById(id);
@@ -2578,6 +2785,29 @@ class Hud {
     const bar = this.el('v-dano');
     bar.style.width = Math.max(0, dmg) + '%';
     bar.style.background = dmg > 60 ? '#6fe3a0' : dmg > 25 ? '#ffb020' : '#ff5470';
+
+    // Flecha al objetivo. Sin esto las misiones eran invisibles: el marcador
+    // caía en cualquier lado del mapa y no había forma de saber para dónde ir.
+    const obj = g.missions.current && g.meta.mesh.visible ? g.meta : g.places.laburo;
+    const oq = g.missions.current ? g.missions.current.def.title : 'Laburo';
+    const dx = obj.x - g.player.pos.x, dz = obj.z - g.player.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const rel = Math.atan2(dx, dz) - g.player.camYaw;
+    this.el('v-flecha').style.transform = `rotate(${(-rel * 180 / Math.PI)}deg)`;
+    this.el('v-dist').textContent = dist > 999 ? (dist / 1000).toFixed(2) + ' km' : Math.round(dist) + ' m';
+    this.el('v-que').textContent = oq;
+
+    const arma = this.el('arma');
+    arma.style.display = g.weapons.armado && g.player.mode === 'foot' ? 'block' : 'none';
+    if (g.weapons.armado) {
+      this.el('v-cargador').textContent = g.weapons.enCargador;
+      this.el('v-balas').textContent = g.weapons.balas;
+    }
+
+    const preso = this.el('preso');
+    const pb = g.police.busted;
+    preso.style.display = pb > 0.35 ? 'block' : 'none';
+    if (pb > 0.35) this.el('v-presobar').style.width = Math.min(100, (pb / 2.2) * 100) + '%';
 
     const line = g.missions.hudLine();
     const mi = this.el('mision');
@@ -2705,6 +2935,7 @@ class Game {
     this.player = new Player(this.scene, this.rng, c.x + 26, c.z + 40);
     this.ownCar = this.spawnOwnCar(c.x + 30, c.z + 44);
 
+    this.weapons = new Weapons(this.scene, this);
     this.missions = new Missions(this);
     this.hud = new Hud();
 
@@ -2927,6 +3158,21 @@ class Game {
       if (!this.cuevaHint) { this.missions.say('Cueva: F para comprar dólares, H para vender.', 2.5); this.cuevaHint = true; }
     } else this.cuevaHint = false;
 
+    const arm = this.places.near(p.x, p.z, 'armeria');
+    if (arm && this.player.mode === 'foot') {
+      if (this.input.hit('use')) {
+        const r = this.weapons.comprar(this.economy);
+        if (r === 'comprada') this.missions.say('Pistola comprada. Clic izquierdo para tirar.', 4);
+        else if (r === 'municion') this.missions.say('Cargaste 24 balas.', 2.5);
+        else this.missions.say('No te alcanza.', 2.5);
+      } else if (!this.armHint) {
+        this.armHint = true;
+        this.missions.say(this.weapons.armado
+          ? `Armería: F para comprar 24 balas (${pesos(ARMA.bala * 24 * this.economy.priceIndex)}).`
+          : `Armería: F para comprar la pistola (${pesos(ARMA.precio * this.economy.priceIndex)}).`, 3.5);
+      }
+    } else this.armHint = false;
+
     const taller = this.places.near(p.x, p.z, 'taller');
     if (taller && this.player.mode === 'drive' && this.player.car.speed < 6) {
       if (this.tallerCool > 0) return;
@@ -2950,7 +3196,8 @@ class Game {
       this.economy.pesos -= fine;
       this.police.clear();
       this.respawn();
-      this.missions.say(`Te levantaron. Se fueron ${pesos(fine)} en coimas y trámites.`, 5);
+      this.weapons.enCargador = 0;
+      this.missions.say(`Te levantaron. Se fueron ${pesos(fine)} en coimas, y te secuestraron el fierro cargado.`, 5);
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
     if (this.player.health <= 0) {
@@ -2996,13 +3243,24 @@ class Game {
     if (this.pendingUse) { this.tryEnterExit(); this.pendingUse = false; }
     this.interactPlaces();
 
-    // El auto propio sigue existiendo aunque me baje.
-    if (this.player.vehicle !== this.ownCar) {
+    // El auto propio sigue existiendo aunque me baje. La física sólo corre si
+    // no lo estoy manejando yo, pero la malla se sincroniza SIEMPRE: tenerla
+    // adentro del if hacía que al manejarlo la carrocería se quedara atrás y
+    // sólo se movieran los faros.
+    {
       const c = this.ownCar.car;
-      c.throttle = 0; c.steer = 0; c.step(dt);
-      collideWorld(c, this.solidsNear(c.x, c.z), null);
-      this.ownCar.mesh.position.set(c.x, 0, c.z);
-      this.ownCar.mesh.rotation.y = c.yaw;
+      if (this.player.vehicle !== this.ownCar) {
+        c.throttle = 0; c.steer = 0; c.step(dt);
+        collideWorld(c, this.solidsNear(c.x, c.z), null);
+      }
+      const m = this.ownCar.mesh;
+      m.position.set(c.x, 0, c.z);
+      m.rotation.y = c.yaw;
+      for (const w of m.userData.wheels) {
+        w.rotation.x = c.wheelSpin;
+        if (w.userData.steer) w.rotation.y = c.steer * 0.4;
+      }
+      for (const b of m.userData.brakes) b.visible = c.throttle < 0;
     }
 
     // Obstáculos que el tráfico tiene que ver: yo, mi auto y los patrulleros.
@@ -3066,6 +3324,24 @@ class Game {
     }
     this.peds.runOver(pc ? cars.filter(c => c !== pc) : cars);
 
+    // Disparar y resolver los tiros de la policía.
+    if (input.is('fire')) {
+      const r = this.weapons.disparar(dt);
+      if (r === 'sin balas' && !this.avisoBalas) {
+        this.avisoBalas = true; this.missions.say('Sin balas. Comprá en la armería (círculo rojo).', 3);
+      }
+      if (r && r !== 'sin balas') this.avisoBalas = false;
+      if (r === 'peaton') this.missions.say('Le disparaste a alguien.', 2);
+    } else this.weapons.cool = Math.max(0, this.weapons.cool - dt);
+    this.weapons.update(dt);
+
+    for (const t of this.police.disparos) {
+      if (this.weapons.bloqueado(t.x, t.z, t.tx, t.tz, this.solidsNear)) continue;
+      this.player.health -= t.dano;
+      this.player.shake = Math.max(this.player.shake, 0.35);
+      this.audio.bang(5);
+    }
+
     this.missions.update(dt);
     this.bustedOrDead();
     this.player.updateCamera(this.camera, dt, input);
@@ -3082,6 +3358,7 @@ class Game {
       slip: pc ? pc.slip : 0, sirenProximity: sirenProx,
     });
 
+    this.player.gun.visible = this.weapons.armado && this.player.mode === 'foot';
     this.hud.update(this);
     input.endFrame();
   }

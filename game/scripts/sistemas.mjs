@@ -7,6 +7,8 @@ import { Traffic } from '../src/vehicles/traffic.js';
 import { Police } from '../src/systems/police.js';
 import { Economy } from '../src/systems/economy.js';
 import { Player } from '../src/actors/player.js';
+import { Peds } from '../src/actors/peds.js';
+import { Weapons } from '../src/systems/weapons.js';
 import { makeRng } from '../src/core/rng.js';
 import { CFG } from '../src/core/config.js';
 import { angDelta } from '../src/core/utils.js';
@@ -189,6 +191,71 @@ console.log('\n=== JUGADOR Y VEHÍCULO ===');
   for (let i = 0; i < 60; i++) j3.updateFoot(DT, adelante2, 0, []);
   ok(j3.z > 1 && Math.abs(j3.x) < 0.5, 'la W camina hacia donde mira la cámara',
      `x=${j3.x.toFixed(2)} z=${j3.z.toFixed(2)}`);
+}
+
+console.log('\n=== ARMAS Y ARRESTO ===');
+{
+  const eco = new Economy(makeRng(8));
+  const pol = new Police(scene, city, roads, makeRng(6));
+  const peds = new Peds(scene, city, makeRng(7));
+  const jug = new Player(scene, makeRng(3), 500, 500);
+  const falso = {
+    player: jug, peds, police: pol, economy: eco,
+    traffic: { cars: [], knock() {} },
+    audio: { bang() {} },
+    solidsNear: () => [],
+  };
+  const w = new Weapons(scene, falso);
+  falso.weapons = w;
+
+  eco.pesos = 5000;
+  ok(w.comprar(eco) === 'sin plata', 'sin guita no te venden el fierro');
+  eco.pesos = 200000;
+  ok(w.comprar(eco) === 'comprada', 'con guita comprás la pistola');
+  ok(w.municionTotal > 0, 'la pistola viene con balas', `${w.municionTotal}`);
+
+  // Un peatón justo enfrente, mirando a +Z.
+  jug.camYaw = 0; jug.mode = 'foot'; jug.x = 500; jug.z = 500;
+  const victima = peds.list[0];
+  victima.active = true; victima.state = 'walk';
+  victima.x = 500; victima.z = 512;
+
+  const antesHeat = pol.heat, antesBalas = w.enCargador;
+  w.cool = 0;
+  const r = w.disparar(DT);
+  ok(r === 'peaton', 'el tiro le pega al peatón que tenés enfrente', `resultado: ${r}`);
+  ok(victima.state === 'down', 'el peatón cae');
+  ok(w.enCargador === antesBalas - 1, 'gasta una bala por tiro');
+  ok(pol.heat > antesHeat, 'dispararle a alguien te levanta la cana',
+     `${antesHeat.toFixed(2)} -> ${pol.heat.toFixed(2)}`);
+
+  // Sin línea de tiro no hay impacto.
+  const victima2 = peds.list[1];
+  victima2.active = true; victima2.state = 'walk'; victima2.x = 500; victima2.z = 515;
+  falso.solidsNear = () => [{ x0: 495, x1: 505, z0: 505, z1: 510 }];
+  w.cool = 0;
+  const r2 = w.disparar(DT);
+  ok(r2 === 'tiro' && victima2.state !== 'down', 'no se dispara a través de un edificio');
+  falso.solidsNear = () => [];
+
+  // Un peatón a 90 grados no puede recibir el tiro.
+  victima2.active = false;          // saco al anterior de la línea de fuego
+  const victima3 = peds.list[2];
+  victima3.active = true; victima3.state = 'walk'; victima3.x = 512; victima3.z = 500;
+  w.cool = 0;
+  ok(w.disparar(DT) === 'tiro' && victima3.state !== 'down', 'no le pega a quien no estás apuntando');
+
+  // Quedarse quieto con la cana encima, en auto, tiene que terminar en arresto.
+  pol.clear(); pol.heat = 3;
+  const u = pol.spawn(600, 600, false);
+  u.car.x = 604; u.car.z = 600; u.car.vx = 0; u.car.vz = 0;
+  const mundoQuieto = { px: 600, pz: 600, playerCar: { vx: 0, vz: 0 }, playerSpeed: 0, solidsNear };
+  for (let i = 0; i < 60 * 3 && pol.busted < 2.4; i++) {
+    u.car.x = 604; u.car.z = 600; u.car.vx = 0; u.car.vz = 0;   // lo mantengo pegado
+    pol.update(DT, mundoQuieto);
+  }
+  ok(pol.busted > 2.2, 'parado con el patrullero encima te terminan agarrando',
+     `contador ${pol.busted.toFixed(2)}s`);
 }
 
 console.log('\n=== GRAFO DE CALLES ===');

@@ -5,7 +5,8 @@ import * as THREE from 'three';
 const TYPES = {
   cueva:  { color: 0x35d07f, label: 'Cueva', r: 3.4 },
   taller: { color: 0x3aa0ff, label: 'Taller', r: 4.2 },
-  laburo: { color: 0xffb020, label: 'Laburo', r: 3.6 },
+  laburo: { color: 0xffb020, label: 'Laburo', r: 4.6 },
+  armeria:{ color: 0xc0392b, label: 'Armería', r: 3.6 },
   meta:   { color: 0xff5470, label: 'Destino', r: 4.0 },
 };
 
@@ -20,7 +21,15 @@ export class Places {
       this.add('cueva', city.randomBlock(b => b.district === 'microcentro' || b.district === 'once'));
     for (let i = 0; i < 5; i++)
       this.add('taller', city.randomBlock(b => b.kind === 'edificado'));
-    this.laburo = this.add('laburo', city.randomBlock(b => b.kind === 'edificado'));
+    // El laburo arranca al lado del jugador. Antes caía en una manzana al azar
+    // de 676 en 3,2 km² y no había forma humana de encontrarlo.
+    const cerca = city.blockAt(city.center.x + 60, city.center.z + 110)
+      || city.randomBlock(b => b.kind === 'edificado');
+    this.laburo = this.add('laburo', cerca);
+    for (let i = 0; i < 3; i++)
+      this.add('armeria', city.randomBlock(b => b.district === 'once' || b.district === 'boca'));
+    this.armeriaCerca = this.add('armeria',
+      city.blockAt(city.center.x - 130, city.center.z + 60) || city.randomBlock(b => b.kind === 'edificado'));
   }
 
   add(type, block, x, z) {

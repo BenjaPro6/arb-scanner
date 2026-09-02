@@ -10,6 +10,8 @@ const MAP = {
   KeyF: 'use',
   KeyQ: 'camleft', KeyE: 'camright',
   KeyH: 'horn',
+  ControlLeft: 'fire', ControlRight: 'fire',   // alternativa al clic
+  KeyR: 'recargar',
   KeyC: 'camera',
 };
 
@@ -40,14 +42,22 @@ export class Input {
   attach(canvas) {
     this.canvas = canvas;
     canvas.style.cursor = 'crosshair';
+    // Botón izquierdo dispara. Para mirar está el mouse con el puntero
+    // capturado; si el navegador no lo permite (pasa dentro de un iframe),
+    // se mira arrastrando con el botón derecho.
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) { this.dragging = true; return; }
       if (e.button !== 0) return;
-      this.dragging = true;
       if (!this.locked && canvas.requestPointerLock) {
         try { canvas.requestPointerLock(); } catch (_) { /* iframe sin permiso */ }
       }
+      this.down.add('fire'); this.pressed.add('fire');
     });
-    addEventListener('mouseup', () => { this.dragging = false; });
+    addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.dragging = false;
+      if (e.button === 0) this.down.delete('fire');
+    });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
       canvas.style.cursor = this.locked ? 'none' : 'crosshair';

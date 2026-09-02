@@ -17,6 +17,7 @@ import { Police } from './systems/police.js';
 import { Economy } from './systems/economy.js';
 import { Places } from './systems/places.js';
 import { Missions } from './systems/missions.js';
+import { Weapons, ARMA } from './systems/weapons.js';
 import { Hud } from './ui/hud.js';
 
 const SEED = 1987;
@@ -72,6 +73,7 @@ class Game {
     this.player = new Player(this.scene, this.rng, c.x + 26, c.z + 40);
     this.ownCar = this.spawnOwnCar(c.x + 30, c.z + 44);
 
+    this.weapons = new Weapons(this.scene, this);
     this.missions = new Missions(this);
     this.hud = new Hud();
 
@@ -294,6 +296,21 @@ class Game {
       if (!this.cuevaHint) { this.missions.say('Cueva: F para comprar dólares, H para vender.', 2.5); this.cuevaHint = true; }
     } else this.cuevaHint = false;
 
+    const arm = this.places.near(p.x, p.z, 'armeria');
+    if (arm && this.player.mode === 'foot') {
+      if (this.input.hit('use')) {
+        const r = this.weapons.comprar(this.economy);
+        if (r === 'comprada') this.missions.say('Pistola comprada. Clic izquierdo para tirar.', 4);
+        else if (r === 'municion') this.missions.say('Cargaste 24 balas.', 2.5);
+        else this.missions.say('No te alcanza.', 2.5);
+      } else if (!this.armHint) {
+        this.armHint = true;
+        this.missions.say(this.weapons.armado
+          ? `Armería: F para comprar 24 balas (${pesos(ARMA.bala * 24 * this.economy.priceIndex)}).`
+          : `Armería: F para comprar la pistola (${pesos(ARMA.precio * this.economy.priceIndex)}).`, 3.5);
+      }
+    } else this.armHint = false;
+
     const taller = this.places.near(p.x, p.z, 'taller');
     if (taller && this.player.mode === 'drive' && this.player.car.speed < 6) {
       if (this.tallerCool > 0) return;
@@ -317,7 +334,8 @@ class Game {
       this.economy.pesos -= fine;
       this.police.clear();
       this.respawn();
-      this.missions.say(`Te levantaron. Se fueron ${pesos(fine)} en coimas y trámites.`, 5);
+      this.weapons.enCargador = 0;
+      this.missions.say(`Te levantaron. Se fueron ${pesos(fine)} en coimas, y te secuestraron el fierro cargado.`, 5);
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
     if (this.player.health <= 0) {
@@ -363,13 +381,24 @@ class Game {
     if (this.pendingUse) { this.tryEnterExit(); this.pendingUse = false; }
     this.interactPlaces();
 
-    // El auto propio sigue existiendo aunque me baje.
-    if (this.player.vehicle !== this.ownCar) {
+    // El auto propio sigue existiendo aunque me baje. La física sólo corre si
+    // no lo estoy manejando yo, pero la malla se sincroniza SIEMPRE: tenerla
+    // adentro del if hacía que al manejarlo la carrocería se quedara atrás y
+    // sólo se movieran los faros.
+    {
       const c = this.ownCar.car;
-      c.throttle = 0; c.steer = 0; c.step(dt);
-      collideWorld(c, this.solidsNear(c.x, c.z), null);
-      this.ownCar.mesh.position.set(c.x, 0, c.z);
-      this.ownCar.mesh.rotation.y = c.yaw;
+      if (this.player.vehicle !== this.ownCar) {
+        c.throttle = 0; c.steer = 0; c.step(dt);
+        collideWorld(c, this.solidsNear(c.x, c.z), null);
+      }
+      const m = this.ownCar.mesh;
+      m.position.set(c.x, 0, c.z);
+      m.rotation.y = c.yaw;
+      for (const w of m.userData.wheels) {
+        w.rotation.x = c.wheelSpin;
+        if (w.userData.steer) w.rotation.y = c.steer * 0.4;
+      }
+      for (const b of m.userData.brakes) b.visible = c.throttle < 0;
     }
 
     // Obstáculos que el tráfico tiene que ver: yo, mi auto y los patrulleros.
@@ -433,6 +462,24 @@ class Game {
     }
     this.peds.runOver(pc ? cars.filter(c => c !== pc) : cars);
 
+    // Disparar y resolver los tiros de la policía.
+    if (input.is('fire')) {
+      const r = this.weapons.disparar(dt);
+      if (r === 'sin balas' && !this.avisoBalas) {
+        this.avisoBalas = true; this.missions.say('Sin balas. Comprá en la armería (círculo rojo).', 3);
+      }
+      if (r && r !== 'sin balas') this.avisoBalas = false;
+      if (r === 'peaton') this.missions.say('Le disparaste a alguien.', 2);
+    } else this.weapons.cool = Math.max(0, this.weapons.cool - dt);
+    this.weapons.update(dt);
+
+    for (const t of this.police.disparos) {
+      if (this.weapons.bloqueado(t.x, t.z, t.tx, t.tz, this.solidsNear)) continue;
+      this.player.health -= t.dano;
+      this.player.shake = Math.max(this.player.shake, 0.35);
+      this.audio.bang(5);
+    }
+
     this.missions.update(dt);
     this.bustedOrDead();
     this.player.updateCamera(this.camera, dt, input);
@@ -449,6 +496,7 @@ class Game {
       slip: pc ? pc.slip : 0, sirenProximity: sirenProx,
     });
 
+    this.player.gun.visible = this.weapons.armado && this.player.mode === 'foot';
     this.hud.update(this);
     input.endFrame();
   }

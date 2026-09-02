@@ -34,6 +34,7 @@ respaldo). Se regenera con `npm run bundle`.
 | `Shift` | correr a pie |
 | `Rueda` | acercar y alejar la cámara |
 | `Q` `E` | girar la cámara sin mouse |
+| `Clic izquierdo` | disparar |
 | `H` | vender dólares en la cueva |
 
 Manejando, si soltás el mouse la cámara vuelve sola atrás del auto.
@@ -65,7 +66,15 @@ no llega a 100 nunca.
 **Policía.** Cinco estrellas. La Federal persigue prolijo siguiendo el grafo de
 calles con A\*; la Bonaerense aparece de tres estrellas para arriba y te embiste.
 Si te escondés, la estrella baja sola. El taller es el Pay'n'Spray: chapa,
-pintura y se te va la cana.
+pintura y se te va la cana. Si te quedás quieto con un patrullero encima —a pie
+o con el auto parado— te terminan agarrando: perdés parte de la guita y el
+cargador.
+
+**Armas.** Pistola con hitscan: el tiro sale hacia donde mirás y busca el
+blanco más cercano dentro de un cono angosto, sin atravesar edificios. Se
+compra en las armerías (círculo rojo) y se paga en pesos, así que la inflación
+también te encarece las balas. De dos estrellas para arriba la policía te
+devuelve el fuego.
 
 **Peatones.** Caminan el perímetro de su manzana, doblan en las esquinas, se
 asustan de lo que se mueve rápido y salen corriendo con las manos en la cabeza.

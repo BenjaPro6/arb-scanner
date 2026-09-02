@@ -24,6 +24,7 @@ export class Police {
     this.unseen = 0;
     this.blinker = 0;
     this.busted = 0;
+    this.disparos = [];   // tiros de la cana pendientes de resolver este frame
   }
 
   crime(kind, mult = 1) {
@@ -63,6 +64,7 @@ export class Police {
         this.units.push(u);
       }
       u.car = new Car(spec, p.x, p.z, this.roads.laneHeading(hit.e, dir));
+      u.vida = 100; u.tiro = this.rng.range(0.4, 1.6);
       u.active = true; u.mesh.visible = true; u.path = null; u.repath = 0;
       u.force = kind === 'bonaerense' ? 'bonaerense' : 'federal';
       return u;
@@ -73,6 +75,7 @@ export class Police {
   update(dt, world) {
     const { px, pz, playerCar, playerSpeed, solidsNear } = world;
     this.blinker += dt;
+    this.disparos.length = 0;
 
     // Enfriamiento: si nadie te ve, la estrella baja sola.
     let seen = false;
@@ -153,10 +156,23 @@ export class Police {
         m.userData.beacon.material.color.setHex(on ? 0xff2020 : 0x2040ff);
       }
 
-      // Te arrestan si estás a pie, quieto y pegado a un patrullero.
-      if (!playerCar && d < 4.5 && playerSpeed < 2 && c.speed < 3) this.busted += dt;
+      // Te arrestan si estás quieto y te tienen encima: a pie o con el auto
+      // parado. Antes sólo contaba a pie, así que arriba del auto nunca
+      // pasaba nada por más que te rodearan.
+      const quieto = playerSpeed < (playerCar ? 3.5 : 2);
+      if (d < (playerCar ? 7 : 4.8) && quieto && c.speed < 4) this.busted += dt;
+
+      // De dos estrellas para arriba te tiran si estás a pie y cerca.
+      if (!playerCar && this.wanted() >= 2 && d < 34) {
+        u.tiro -= dt;
+        if (u.tiro <= 0) {
+          u.tiro = this.rng.range(0.7, 1.8);
+          this.disparos.push({ x: c.x, z: c.z, tx: px, tz: pz, dano: this.rng.range(5, 11) });
+        }
+      }
     }
-    if (!this.units.some(u => u.active && Math.hypot(u.car.x - px, u.car.z - pz) < 6)) this.busted = 0;
+    if (!this.units.some(u => u.active && Math.hypot(u.car.x - px, u.car.z - pz) < (world.playerCar ? 8 : 6)))
+      this.busted = 0;
   }
 
   activeCars() { return this.units.filter(u => u.active).map(u => u.car); }

@@ -97,6 +97,14 @@ await p.screenshot({ path: shot.replace('.png', '-dia.png') });
 await p.evaluate(() => { window.game.player.enterCooldown = 0; window.game.pendingUse = true; });
 await p.waitForTimeout(1200);
 const modo = await p.evaluate(() => window.game.player.mode);
+// Armar al jugador y encarar el HUD completo: flecha, munición, estrellas.
+await p.evaluate(() => {
+  const g = window.game;
+  g.economy.pesos = 400000;
+  g.weapons.comprar(g.economy);
+  g.police.heat = 3;
+});
+await p.waitForTimeout(1400);
 await p.screenshot({ path: shot.replace('.png', '-pie.png') });
 console.log('capturas:', shot, '| -dia | -pie (modo:', modo + ')');
 if (errs.length) { console.log('\n=== ERRORES ===\n' + errs.join('\n')); await b.close(); process.exit(1); }

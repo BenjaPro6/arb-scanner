@@ -4,14 +4,15 @@
 // Los módulos ESM se concatenan en un solo ámbito: se borran las líneas de
 // import y el prefijo export. Three.js se trae por import dinámico desde un
 // CDN, con un segundo CDN de respaldo.
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 
 const ORDEN = [
   'core/config.js', 'core/rng.js', 'core/utils.js', 'core/input.js', 'core/audio.js',
   'world/meshbuilder.js', 'world/textures.js', 'world/city.js', 'world/roads.js', 'world/render.js',
   'vehicles/catalog.js', 'vehicles/model.js', 'vehicles/physics.js', 'vehicles/traffic.js',
   'actors/human.js', 'actors/peds.js', 'actors/player.js',
-  'systems/economy.js', 'systems/places.js', 'systems/missions.js', 'systems/police.js',
+  'systems/economy.js', 'systems/places.js', 'systems/weapons.js', 'systems/missions.js',
+  'systems/police.js',
   'ui/hud.js', 'main.js',
 ];
 
@@ -25,6 +26,27 @@ const CDN = process.argv.includes('--local')
   ? ["'../vendor/three.module.js'"]
   : ["'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js'",
      "'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js'"];
+
+// Si alguien agrega un módulo y se olvida de ponerlo acá, el bundle salía sin
+// él y sólo fallaba al abrirlo. Ahora se aborta con el nombre del que falta.
+{
+  const raiz = new URL('../src/', import.meta.url);
+  const hallados = [];
+  const recorrer = async (dir, pre = '') => {
+    for (const e of await readdir(new URL(dir, raiz), { withFileTypes: true })) {
+      if (e.isDirectory()) await recorrer(e.name + '/', pre + e.name + '/');
+      else if (e.name.endsWith('.js')) hallados.push(pre + e.name);
+    }
+  };
+  await recorrer('./');
+  const faltan = hallados.filter(f => !ORDEN.includes(f));
+  if (faltan.length) {
+    console.error('Módulos que no están en ORDEN y quedarían afuera del bundle:\n  ' + faltan.join('\n  '));
+    process.exit(1);
+  }
+  const sobran = ORDEN.filter(f => !hallados.includes(f));
+  if (sobran.length) { console.error('ORDEN nombra módulos que no existen:\n  ' + sobran.join('\n  ')); process.exit(1); }
+}
 
 const partes = [];
 const yaDeclarado = new Set();   // nombres ya tomados en el ámbito común

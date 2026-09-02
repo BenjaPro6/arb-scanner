@@ -24,7 +24,18 @@ const CSS = `
 #mision{bottom:16px;left:50%;transform:translateX(-50%);text-align:center;max-width:520px}
 #mision .t{font-weight:700;font-size:14px}
 #aviso{bottom:74px;left:50%;transform:translateX(-50%);text-align:center;max-width:560px;font-size:14px;opacity:0;transition:opacity .25s;background:rgba(10,12,16,.7)}
-#ayuda{position:absolute;bottom:16px;left:14px;background:rgba(10,12,16,.42);border-radius:8px;padding:8px 10px;font-size:11px;opacity:.55;max-width:260px;line-height:1.6}
+#objetivo{position:absolute;bottom:104px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 14px}
+#objetivo svg{display:block}
+#objetivo .d{font-variant-numeric:tabular-nums;font-weight:700}
+#objetivo .q{opacity:.6;font-size:12px}
+#arma{position:absolute;bottom:112px;right:14px;text-align:right;padding:8px 12px;display:none}
+#arma .m{font-size:22px;font-weight:750;font-variant-numeric:tabular-nums}
+#arma .m i{font-style:normal;opacity:.5;font-size:14px}
+#preso{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;padding:14px 22px;display:none}
+#preso b{font-size:18px;letter-spacing:1px}
+#preso .b{height:5px;width:200px;background:rgba(255,255,255,.18);border-radius:3px;margin-top:8px;overflow:hidden}
+#preso .b i{display:block;height:100%;background:#ff5470;width:0%}
+#ayuda{position:absolute;bottom:16px;left:14px;background:rgba(10,12,16,.42);border-radius:8px;padding:9px 12px;font-size:11px;opacity:.6;max-width:350px;line-height:1.75}
 #reloj{top:14px;left:50%;transform:translateX(-50%);font-variant-numeric:tabular-nums;opacity:.85}
 kbd{background:rgba(255,255,255,.14);border-radius:3px;padding:1px 4px;font:inherit;font-size:10px}
 `;
@@ -54,11 +65,23 @@ export class Hud {
       </div>
       <div class="panel" id="mision" style="display:none"><div class="t" id="v-mision"></div></div>
       <div class="panel" id="aviso"><span id="v-aviso"></span></div>
+      <div class="panel" id="objetivo">
+        <svg width="22" height="22" viewBox="-11 -11 22 22" id="v-flecha">
+          <path d="M0 -9 L6 7 L0 3.4 L-6 7 Z" fill="#ffb020"></path>
+        </svg>
+        <div><div class="d" id="v-dist">—</div><div class="q" id="v-que">—</div></div>
+      </div>
+      <div class="panel" id="arma">
+        <div class="q" id="v-arma">Pistola</div>
+        <div class="m"><span id="v-cargador">0</span><i>/<span id="v-balas">0</span></i></div>
+      </div>
+      <div class="panel" id="preso"><b id="v-preso">TE ESTÁN POR AGARRAR</b><div class="b"><i id="v-presobar"></i></div></div>
       <div id="ayuda">
         <kbd>Mouse</kbd> mirar · <kbd>W A S D</kbd> caminar y manejar<br>
         <kbd>Espacio</kbd> freno de mano · <kbd>F</kbd> subir / bajar · <kbd>Shift</kbd> correr<br>
-        <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> girar cámara sin mouse<br>
-        Naranja = laburo · Verde = cueva (cambiás guita) · Azul = taller
+        <kbd>Clic izq</kbd> disparar · <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> cámara<br>
+        Naranja = laburo · Verde = cueva · Azul = taller · Rojo = armería<br>
+        Seguí la flecha naranja para agarrar la primera changa.
       </div>`;
     document.body.appendChild(root);
     this.el = (id) => document.getElementById(id);
@@ -91,6 +114,29 @@ export class Hud {
     const bar = this.el('v-dano');
     bar.style.width = Math.max(0, dmg) + '%';
     bar.style.background = dmg > 60 ? '#6fe3a0' : dmg > 25 ? '#ffb020' : '#ff5470';
+
+    // Flecha al objetivo. Sin esto las misiones eran invisibles: el marcador
+    // caía en cualquier lado del mapa y no había forma de saber para dónde ir.
+    const obj = g.missions.current && g.meta.mesh.visible ? g.meta : g.places.laburo;
+    const oq = g.missions.current ? g.missions.current.def.title : 'Laburo';
+    const dx = obj.x - g.player.pos.x, dz = obj.z - g.player.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const rel = Math.atan2(dx, dz) - g.player.camYaw;
+    this.el('v-flecha').style.transform = `rotate(${(-rel * 180 / Math.PI)}deg)`;
+    this.el('v-dist').textContent = dist > 999 ? (dist / 1000).toFixed(2) + ' km' : Math.round(dist) + ' m';
+    this.el('v-que').textContent = oq;
+
+    const arma = this.el('arma');
+    arma.style.display = g.weapons.armado && g.player.mode === 'foot' ? 'block' : 'none';
+    if (g.weapons.armado) {
+      this.el('v-cargador').textContent = g.weapons.enCargador;
+      this.el('v-balas').textContent = g.weapons.balas;
+    }
+
+    const preso = this.el('preso');
+    const pb = g.police.busted;
+    preso.style.display = pb > 0.35 ? 'block' : 'none';
+    if (pb > 0.35) this.el('v-presobar').style.width = Math.min(100, (pb / 2.2) * 100) + '%';
 
     const line = g.missions.hudLine();
     const mi = this.el('mision');
