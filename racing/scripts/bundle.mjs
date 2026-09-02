@@ -5,11 +5,12 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 
 const ORDEN = [
   'core/utils.js', 'core/rng.js', 'core/meshbuilder.js',
-  'sim/tire.js', 'sim/vehicle.js',
+  'sim/tire.js', 'sim/vehicle.js', 'sim/catalogo.js', 'sim/malla.js',
   'track/spline.js', 'track/track.js', 'track/mesh.js',
   'input/wheel.js',
-  'race/timing.js', 'race/piloto.js',
-  'ui/hud.js', 'main.js',
+  'race/timing.js', 'race/piloto.js', 'race/rival.js', 'race/carrera.js',
+  'race/puntaje.js', 'race/progreso.js',
+  'ui/hud.js', 'ui/menu.js', 'main.js',
 ];
 // vehicle.js hace `import * as T from './tire.js'`: al aplanar hay que
 // reconstruir ese objeto a mano.

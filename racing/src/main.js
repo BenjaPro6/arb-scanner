@@ -1,18 +1,21 @@
 import * as THREE from 'three';
-import { Vehicle, TC } from './sim/vehicle.js';
+import { Vehicle } from './sim/vehicle.js';
+import { AUTOS, aplicarMejoras } from './sim/catalogo.js';
+import { construirAuto } from './sim/malla.js';
 import { generarCircuito, superficie } from './track/track.js';
 import { construirCircuito } from './track/mesh.js';
 import { Wheel } from './input/wheel.js';
 import { Timing, reloj } from './race/timing.js';
+import { Carrera } from './race/carrera.js';
+import { Puntaje } from './race/puntaje.js';
+import { Progreso } from './race/progreso.js';
 import { Hud } from './ui/hud.js';
-import { clamp, lerp, angDelta } from './core/utils.js';
-import { MeshBuilder } from './core/meshbuilder.js';
+import { Menu, EVENTOS } from './ui/menu.js';
+import { clamp, lerp } from './core/utils.js';
 
-// La física corre a paso FIJO de 400 Hz, desacoplada del dibujo. Esto no es
-// un capricho: a 60 Hz el volante se siente gomoso y el neumático pierde el
-// pico. Es la diferencia entre un simulador y un jueguito.
+// La física corre a paso FIJO de 400 Hz, desacoplada del dibujo: a 60 Hz el
+// volante se siente gomoso y el neumático pierde el pico de agarre.
 const HZ = 400, DT = 1 / HZ;
-const SEMILLA = Number(new URLSearchParams(location.search).get('pista') || 7);
 
 class Juego {
   async init() {
@@ -21,8 +24,8 @@ class Juego {
       requestAnimationFrame(() => requestAnimationFrame(r));
     });
 
-    await paso('Trazando el circuito…');
-    this.circuito = generarCircuito(SEMILLA);
+    await paso('Abriendo el garage…');
+    this.progreso = new Progreso();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
@@ -34,93 +37,130 @@ class Juego {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x8fb6d9);
-    this.scene.fog = new THREE.Fog(0x8fb6d9, 320, 1500);
+    this.scene.fog = new THREE.Fog(0x8fb6d9, 340, 1600);
     this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 3000);
-
-    await paso('Asfaltando…');
-    construirCircuito(this.circuito, this.scene);
-
     this.scene.add(new THREE.HemisphereLight(0xbdd6f5, 0x4a5240, 1.15));
     const sol = new THREE.DirectionalLight(0xfff2d8, 1.9);
-    sol.position.set(220, 340, 140);
-    this.scene.add(sol);
+    sol.position.set(220, 340, 140); this.scene.add(sol);
+    this.mallaPista = null;
+    // Se crea antes de rearmarAuto(): colocarEnGrilla lo usa.
+    this.camPos = new THREE.Vector3();
+    this.sActual = 0; this.acumulado = 0; this.choque = 0;
+
+    await paso('Trazando el circuito…');
+    this.pista = 7;
+    this.cargarPista(7);
 
     await paso('Bajando el auto del camión…');
-    this.auto = new Vehicle(TC);
-    this.colocarEnGrilla();
-    this.mallaAuto = this.construirAuto();
-    this.scene.add(this.mallaAuto);
+    this.auto = null; this.mallaAuto = null;
+    this.rearmarAuto();
 
     this.wheel = new Wheel();
-    this.timing = new Timing(this.circuito, SEMILLA);
     this.hud = new Hud();
+    this.menu = new Menu(this);
+    this.carrera = new Carrera(this.circuito, this.scene);
+    this.puntaje = new Puntaje();
     this.aviso = ''; this.avisoT = 0;
-    this.sActual = 0;
-    this.acumulado = 0;
-    this.camPos = new THREE.Vector3();
+    this.modo = 'practica';
 
     addEventListener('resize', () => this.onResize());
     addEventListener('keydown', (e) => {
-      if (e.code === 'KeyR') this.colocarEnPista();
+      if (e.code === 'Tab') { e.preventDefault(); this.alternarMenu(); }
+      if (e.code === 'KeyR') this.volverAPista();
       if (e.code === 'KeyC') this.calibrar();
+      if (e.code === 'Escape' && this.carrera.estado !== 'libre') this.terminarCarrera(true);
     });
 
     document.getElementById('splash').classList.add('listo');
-    this.decir(this.wheel.conectado ? 'Volante detectado' : 'Sin volante: se juega con W A S D', 3);
+    this.menu.abrir(true);
     this.last = performance.now();
     requestAnimationFrame(this.loop.bind(this));
   }
 
   decir(t, s = 2.5) { this.aviso = t; this.avisoT = s; }
 
-  colocarEnGrilla() {
-    const m = this.circuito.linea.en(this.circuito.largo - 40);
-    this.auto.x = m.x; this.auto.z = m.z;
-    this.auto.yaw = Math.atan2(m.tx, m.tz);
-    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+  specActual() {
+    const k = this.progreso.actual;
+    return aplicarMejoras(AUTOS[k], this.progreso.mejorasDe(k));
   }
 
-  // Volver a pista mirando hacia adelante, sin perder la posición de vuelta.
-  colocarEnPista() {
+  cargarPista(semilla) {
+    if (this.mallaPista) { this.scene.remove(this.mallaPista); }
+    this.pista = semilla;
+    this.circuito = generarCircuito(semilla);
+    this.mallaPista = construirCircuito(this.circuito, this.scene);
+    this.timing = new Timing(this.circuito, semilla);
+    if (this.carrera) this.carrera.c = this.circuito;
+    this.hud && (this.hud._lim = null);
+  }
+
+  // Rearma el auto del jugador con el modelo y las mejoras actuales.
+  rearmarAuto() {
+    const spec = this.specActual();
+    const x = this.auto ? this.auto.x : 0, z = this.auto ? this.auto.z : 0, yaw = this.auto ? this.auto.yaw : 0;
+    this.auto = new Vehicle(spec, x, z, yaw);
+    if (this.mallaAuto) this.scene.remove(this.mallaAuto);
+    this.mallaAuto = construirAuto(AUTOS[this.progreso.actual].color);
+    this.scene.add(this.mallaAuto);
+    this.ruedas = this.mallaAuto.userData.ruedas;
+    if (this.circuito) this.colocarEnGrilla();
+  }
+
+  alternarMenu() {
+    const abrir = !this.menu.abierto;
+    this.menu.abrir(abrir);
+    if (abrir && this.carrera.corriendo) this.decir('La carrera sigue corriendo', 2);
+  }
+
+  colocarEnGrilla(s = null, carril = 0) {
+    const m = this.circuito.linea.en(s == null ? this.circuito.largo - 26 : s);
+    this.auto.x = m.x + m.nx * carril; this.auto.z = m.z + m.nz * carril;
+    this.auto.yaw = Math.atan2(m.tx, m.tz);
+    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+    this.auto.marcha = 1;
+    for (const k in this.auto.w) this.auto.w[k] = 0;
+    this.sActual = ((this.circuito.largo + (s == null ? -26 : s)) % this.circuito.largo);
+    this.camPos.set(0, 0, 0);
+  }
+
+  volverAPista() {
     const m = this.circuito.linea.en(this.sActual);
     this.auto.x = m.x; this.auto.z = m.z;
     this.auto.yaw = Math.atan2(m.tx, m.tz);
-    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
-    this.auto.roll = this.auto.pitch = this.auto.zs = 0;
-    this.auto.droll = this.auto.dpitch = this.auto.dzs = 0;
-    for (const k of ['DI', 'DD', 'TI', 'TD']) this.auto.w[k] = 0;
+    this.auto.u = Math.min(this.auto.u, 14); this.auto.v = 0; this.auto.r = 0;
+    this.auto.zs = this.auto.pitch = this.auto.roll = 0;
+    this.auto.dzs = this.auto.dpitch = this.auto.droll = 0;
+    for (const k in this.auto.w) this.auto.w[k] = this.auto.u / this.auto.s.rueda;
     this.timing.valida = false;
+    this.puntaje.romper('Volviste a pista');
     this.decir('De vuelta en pista (vuelta invalidada)', 2);
   }
 
-  construirAuto() {
-    const g = new THREE.Group();
-    const b = new MeshBuilder();
-    const hw = 0.76, hl = 2.15;   // más angosta que la trocha: las ruedas tienen que asomar
-    b.box(-hw, -hl, hw, hl, 0.28, 0.72, 2, 2, 2);
-    b.box(-hw * 0.82, -hl * 0.34, hw * 0.82, hl * 0.52, 0.72, 1.12, 2, 2, 2);
-    b.box(-hw * 1.02, hl - 0.28, hw * 1.02, hl, 0.30, 0.55, 2, 2, 2);
-    const cuerpo = new THREE.Mesh(b.toGeometry(), new THREE.MeshLambertMaterial({ color: 0xd8382f }));
-    cuerpo.castShadow = true; g.add(cuerpo);
+  practicar(id) {
+    const ev = EVENTOS.find(e => e.id === id);
+    this.carrera.abandonar();
+    this.modo = 'practica';
+    if (ev.pista !== this.pista) this.cargarPista(ev.pista);
+    this.colocarEnGrilla();
+    this.decir(`Práctica libre · ${ev.nombre}`, 3);
+  }
 
-    const vidrio = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.34, 0.9),
-      new THREE.MeshLambertMaterial({ color: 0x101418 }));
-    vidrio.position.set(0, 0.94, 0.42); g.add(vidrio);
+  empezarCarrera(id) {
+    const ev = EVENTOS.find(e => e.id === id);
+    if (ev.pista !== this.pista) this.cargarPista(ev.pista);
+    this.modo = 'carrera';
+    this.evento = ev;
+    const g = this.carrera.preparar(ev, this.specActual());
+    this.colocarEnGrilla(g.s, g.carril);
+    this.puntaje = new Puntaje();
+    this.progreso.carreras.corridas++;
+    this.decir(`${ev.nombre} · ${ev.vueltas} vueltas`, 3);
+  }
 
-    const alerón = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.07, 0.36),
-      new THREE.MeshLambertMaterial({ color: 0x1c1f24 }));
-    alerón.position.set(0, 1.14, -hl + 0.18); g.add(alerón);
-
-    const rg = new THREE.CylinderGeometry(0.315, 0.315, 0.26, 14);
-    rg.rotateZ(Math.PI / 2);
-    const rm = new THREE.MeshLambertMaterial({ color: 0x15171b });
-    this.ruedas = {};
-    for (const [k, lo, la] of [['DI', 1.28, -0.86], ['DD', 1.28, 0.86], ['TI', -1.34, -0.86], ['TD', -1.34, 0.86]]) {
-      const w = new THREE.Mesh(rg, rm);
-      w.position.set(la, 0.315, lo);
-      g.add(w); this.ruedas[k] = w;
-    }
-    return g;
+  terminarCarrera(abandono) {
+    if (abandono) this.decir('Abandonaste la carrera', 3);
+    this.carrera.abandonar();
+    this.modo = 'practica';
   }
 
   onResize() {
@@ -132,63 +172,100 @@ class Juego {
   calibrar() {
     if (this.wheel.calibrando) return;
     this.wheel.empezarCalibracion();
-    this.decir('CALIBRANDO: girá el volante de tope a tope y pisá los tres pedales a fondo', 6);
+    this.decir('CALIBRANDO: girá el volante de tope a tope y pisá los tres pedales', 6);
     setTimeout(() => {
       const ejes = this.wheel.terminarCalibracion();
       this.decir(ejes && ejes.length
-        ? `Calibrado: ${ejes.length} ejes reconocidos (${ejes.map(e => 'eje ' + e.i).join(', ')})`
+        ? `Calibrado: ${ejes.length} ejes reconocidos`
         : 'No se movió ningún eje. ¿Está conectado el volante?', 5);
     }, 6000);
   }
 
   fisica(dt) {
-    const e = this.wheel.estado(this.auto.kmh);
     const a = this.auto;
-    // La convención interna es que mandos.volante positivo dobla a la
-    // izquierda; el jugador espera que girar a la derecha doble a la derecha.
+    const largando = this.carrera.largando;
+    const e = this.wheel.estado(a.kmh);
+    // La convención interna es que volante positivo dobla a la izquierda.
     a.mandos.volante = -e.volante;
-    a.mandos.acelerador = e.acelerador;
-    a.mandos.freno = e.freno;
+    a.mandos.acelerador = largando ? 0 : e.acelerador;
+    a.mandos.freno = largando ? 1 : e.freno;
     a.mandos.mano = e.mano;
 
-    // El agarre cambia según dónde estén las ruedas: asfalto, piano o pasto.
     const p = this.circuito.linea.proyectar(a.x, a.z, this.sActual);
     this.sActual = ((p.s % this.circuito.largo) + this.circuito.largo) % this.circuito.largo;
     const sup = superficie(this.circuito, p.lateral, this.sActual);
-    a.s = { ...TC, mu: TC.mu * sup.mu };
     this.superficie = sup;
+    const base = this.specActual();
+    a.s = { ...base, mu: base.mu * sup.mu };
 
     a.paso(dt);
-    this.timing.update(dt, this.sActual, sup.tipo === 'asfalto' || sup.tipo === 'piano');
+    this.enPista = sup.tipo === 'asfalto' || sup.tipo === 'piano';
+    this.timing.update(dt, this.sActual, this.enPista);
+
+    const r = this.carrera.update(dt, this.sActual);
+    if (r) this.cerrarResultado(r);
+
+    // Choques contra los rivales: te empujan y te cortan la cadena.
+    this.choque = Math.max(0, this.choque - dt * 8);
+    for (const riv of this.carrera.rivales) {
+      const dx = a.x - riv.x, dz = a.z - riv.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 3.4 && d > 0.01) {
+        const nx = dx / d, nz = dz / d, pen = 3.4 - d;
+        a.x += nx * pen * 0.8; a.z += nz * pen * 0.8;
+        const vn = a.u * 0.2;
+        a.v += nx * 2.4; a.u *= 0.985;
+        this.choque = Math.max(this.choque, Math.abs(vn) * 0.6 + 3);
+        riv.v *= 0.985;
+      }
+    }
+  }
+
+  cerrarResultado(r) {
+    this.puntaje.cobrar();
+    this.progreso.sumarPuntos(this.puntaje.banco);
+    const bonoPuntos = Math.round(this.puntaje.banco / 12);
+    this.progreso.premiar(r.plata + bonoPuntos, r.xp);
+    if (r.puesto === 1) this.progreso.carreras.ganadas++;
+    this.progreso.guardar();
+    this.resultado = { ...r, puntos: this.puntaje.banco, bonoPuntos };
+    this.decir(`${r.puesto}º de ${r.total} · ${reloj(r.tiempo)} · +${(r.plata + bonoPuntos).toLocaleString('es-AR')}`, 8);
+    setTimeout(() => { this.terminarCarrera(false); this.menu.abrir(true); }, 5200);
   }
 
   update(dtReal) {
     if (this.wheel.calibrando) this.wheel.pasoCalibracion(dtReal);
     this.avisoT = Math.max(0, this.avisoT - dtReal);
 
-    // Acumulador de paso fijo: la física no depende de los cuadros por segundo.
-    this.acumulado += Math.min(dtReal, 0.25);
-    let pasos = 0;
-    while (this.acumulado >= DT && pasos < 240) {
-      const antes = this.timing.vuelta;
-      this.fisica(DT);
-      if (this.timing.vuelta > antes && this.timing.ultima != null) {
-        const r = this.timing.vueltas[this.timing.vueltas.length - 1];
-        this.decir(r.valida
-          ? (this.timing.mejor === r.t ? `RÉCORD · ${reloj(r.t)}` : `Vuelta ${reloj(r.t)}`)
-          : `Vuelta inválida (${reloj(r.t)}) — te fuiste de pista`, 3.5);
+    if (!this.menu.abierto) {
+      this.acumulado += Math.min(dtReal, 0.25);
+      let pasos = 0;
+      while (this.acumulado >= DT && pasos < 240) {
+        const antes = this.timing.vuelta;
+        this.fisica(DT);
+        if (this.timing.vuelta > antes && this.timing.ultima != null) {
+          const v = this.timing.vueltas[this.timing.vueltas.length - 1];
+          if (v.valida && this.progreso.registrarVuelta(this.pista, v.t))
+            this.decir(`RÉCORD · ${reloj(v.t)}`, 3);
+          else if (v.valida) this.decir(`Vuelta ${reloj(v.t)}`, 2.5);
+          else this.decir(`Vuelta inválida (${reloj(v.t)})`, 2.5);
+        }
+        this.acumulado -= DT;
+        pasos++;
       }
-      this.acumulado -= DT;
-      pasos++;
+      this.puntaje.update(dtReal, {
+        auto: this.auto, enPista: this.enPista !== false,
+        rivales: this.carrera.rivales, choque: this.choque,
+      });
     }
 
     const a = this.auto;
     this.mallaAuto.position.set(a.x, -a.zs * 0.6, a.z);
     this.mallaAuto.rotation.set(a.pitch * 0.55, a.yaw, -a.roll * 0.85, 'YXZ');
-    for (const k of ['DI', 'DD', 'TI', 'TD']) {
+    for (const k in this.ruedas) {
       const w = this.ruedas[k];
       w.rotation.x = a.w[k] * 0.35;
-      w.rotation.y = k[0] === 'D' ? a.mandos.volante * TC.volanteMax : 0;
+      w.rotation.y = k[0] === 'D' ? a.mandos.volante * a.s.volanteMax : 0;
     }
 
     this.camara(dtReal);
@@ -196,21 +273,16 @@ class Juego {
   }
 
   camara(dt) {
-    const a = this.auto;
-    const f = a.adelante();
+    const a = this.auto, f = a.adelante();
     const vel = clamp(a.velocidad / 60, 0, 1);
-    const dist = lerp(8.2, 11.4, vel);
-    const alto = lerp(3.3, 4.0, vel);
-    const objetivo = new THREE.Vector3(a.x - f.x * dist, alto, a.z - f.z * dist);
-    if (this.camPos.lengthSq() === 0) this.camPos.copy(objetivo);
-    this.camPos.lerp(objetivo, Math.min(1, dt * 7));
+    const dist = lerp(8.2, 11.4, vel), alto = lerp(3.3, 4.0, vel);
+    const obj = new THREE.Vector3(a.x - f.x * dist, alto, a.z - f.z * dist);
+    if (this.camPos.lengthSq() === 0) this.camPos.copy(obj);
+    this.camPos.lerp(obj, Math.min(1, dt * 7));
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(a.x + f.x * 9, 0.9, a.z + f.z * 9);
-    // El campo de visión se abre con la velocidad: da sensación de vértigo.
     const fov = lerp(60, 76, vel);
-    if (Math.abs(this.camera.fov - fov) > 0.15) {
-      this.camera.fov = fov; this.camera.updateProjectionMatrix();
-    }
+    if (Math.abs(this.camera.fov - fov) > 0.15) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
   }
 
   loop(now) {

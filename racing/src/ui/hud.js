@@ -23,11 +23,29 @@ const CSS = `
 #gomas b i{position:absolute;inset:auto 0 0 0;display:block;background:#5ad1a0}
 #gomas .rot{grid-column:1 / span 2;text-align:center;font-size:10px;opacity:.55;letter-spacing:.6px}
 #mapa{top:14px;right:14px;padding:8px;line-height:0}
-#aviso{top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:20px;
+#aviso{top:22%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:19px;
   font-weight:700;opacity:0;transition:opacity .25s;padding:12px 22px}
 #volante{bottom:16px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.75;text-align:center}
 #volante .b{width:210px;height:5px;background:rgba(255,255,255,.14);border-radius:3px;margin:5px auto 0;position:relative}
 #volante .b i{position:absolute;top:-3px;width:3px;height:11px;background:#ffc447;border-radius:2px;left:50%}
+#carrera{top:14px;left:50%;transform:translateX(-50%);text-align:center;padding:9px 18px;display:none}
+#carrera.on{display:block}
+#carrera .pos{font-size:30px;font-weight:800;line-height:1}
+#carrera .pos i{font-style:normal;font-size:14px;opacity:.55;font-weight:600}
+#carrera .vta{opacity:.65;font-size:12px;margin-top:2px;font-variant-numeric:tabular-nums}
+#cuenta{top:34%;left:50%;transform:translate(-50%,-50%);font-size:92px;font-weight:900;
+  color:#ffc447;display:none;padding:0;background:none;border:none;text-shadow:0 4px 24px rgba(0,0,0,.7)}
+#cuenta.on{display:block}
+#tabla{top:190px;left:14px;min-width:200px;display:none;padding:9px 11px}
+#tabla.on{display:block}
+#tabla .r{display:flex;gap:9px;font-size:12px;padding:2px 0;font-variant-numeric:tabular-nums}
+#tabla .r.yo{color:#ffc447;font-weight:700}
+#tabla .r .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cadena{bottom:214px;right:16px;text-align:right;display:none;padding:9px 13px;min-width:132px}
+#cadena.on{display:block}
+#cadena .pts{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;color:#ffc447;line-height:1.1}
+#cadena .m{font-size:13px;opacity:.75}
+#cadena .q{font-size:11px;opacity:.6;margin-top:3px}
 #ayuda{position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5}
 kbd{background:rgba(255,255,255,.14);border-radius:3px;padding:1px 5px;font:inherit;font-size:10px}
 `;
@@ -55,11 +73,22 @@ export class Hud {
       </div>
       <div class="p" id="mapa"><canvas id="v-mapa" width="190" height="190"></canvas></div>
       <div class="p" id="aviso"><span id="v-aviso"></span></div>
+      <div class="p" id="carrera">
+        <div class="pos"><span id="v-pos">1</span><i>/<span id="v-total">6</span></i></div>
+        <div class="vta">VUELTA <span id="v-lap">1</span>/<span id="v-laps">3</span></div>
+      </div>
+      <div id="cuenta"><span id="v-cuenta">3</span></div>
+      <div class="p" id="tabla"><div id="v-tabla"></div></div>
+      <div class="p" id="cadena">
+        <div class="pts" id="v-cad">0</div>
+        <div class="m">x<span id="v-mult">1.0</span></div>
+        <div class="q" id="v-quehizo"></div>
+      </div>
       <div class="p" id="volante">
         <span id="v-vol">Teclado</span>
         <div class="b"><i id="v-volpos"></i></div>
       </div>
-      <div id="ayuda"><kbd>W A S D</kbd> manejar · <kbd>R</kbd> volver a pista · <kbd>C</kbd> calibrar volante</div>`;
+      <div id="ayuda"><kbd>Tab</kbd> menú y garage · <kbd>W A S D</kbd> manejar · <kbd>R</kbd> volver a pista · <kbd>C</kbd> calibrar volante</div>`;
     document.body.appendChild(r);
     this.el = (id) => document.getElementById(id);
     this.ctx = this.el('v-mapa').getContext('2d');
@@ -95,6 +124,38 @@ export class Hud {
     av.style.opacity = g.avisoT > 0 ? '1' : '0';
     if (g.avisoT > 0) this.el('v-aviso').innerHTML = g.aviso;
 
+    // --- Carrera ---
+    const c = g.carrera;
+    const enCarrera = c.estado === 'corriendo' || c.estado === 'cuenta' || c.estado === 'final';
+    this.el('carrera').classList.toggle('on', enCarrera);
+    this.el('tabla').classList.toggle('on', enCarrera && !!c.orden);
+    this.el('cuenta').classList.toggle('on', c.estado === 'cuenta');
+    if (c.estado === 'cuenta') {
+      const n = Math.ceil(c.cuenta);
+      this.el('v-cuenta').textContent = n > 3 ? '3' : n <= 0 ? '¡YA!' : String(n);
+    }
+    if (enCarrera) {
+      this.el('v-pos').textContent = c.jugador.puesto;
+      this.el('v-total').textContent = (c.rivales.length + 1);
+      this.el('v-lap').textContent = Math.min(c.vueltas, c.jugador.vuelta + 1);
+      this.el('v-laps').textContent = c.vueltas;
+      if (c.orden) {
+        this.el('v-tabla').innerHTML = c.orden.map((o, i) =>
+          `<div class="r ${o.jugador ? 'yo' : ''}"><span>${i + 1}</span><span class="n">${o.nombre}</span><span>v${o.vuelta + 1}</span></div>`
+        ).join('');
+      }
+    }
+
+    // --- Cadena de habilidad ---
+    const pj = g.puntaje;
+    const activa = pj.cadena > 0 || pj.ultimoT > 0;
+    this.el('cadena').classList.toggle('on', activa);
+    if (activa) {
+      this.el('v-cad').textContent = Math.round(pj.cadena).toLocaleString('es-AR');
+      this.el('v-mult').textContent = pj.mult.toFixed(1);
+      this.el('v-quehizo').textContent = pj.ultimoT > 0 ? pj.ultimo : '';
+    }
+
     this.dibujarMapa(g);
   }
 
@@ -120,6 +181,11 @@ export class Hud {
     c.strokeStyle = '#f2efe6'; c.lineWidth = 2;
     c.beginPath(); c.arc(meta[0], meta[1], 3.5, 0, Math.PI * 2); c.stroke();
 
+    for (const r of g.carrera.rivales) {
+      const q = tf(r.x, r.z);
+      c.fillStyle = '#7fd4ff';
+      c.beginPath(); c.arc(q[0], q[1], 2.8, 0, Math.PI * 2); c.fill();
+    }
     const p = tf(g.auto.x, g.auto.z);
     c.fillStyle = '#ffc447';
     c.beginPath(); c.arc(p[0], p[1], 4, 0, Math.PI * 2); c.fill();

@@ -443,6 +443,127 @@ class Vehicle {
   }
 }
 
+// ===== sim/catalogo.js =====
+// Garage. Cada auto es un juego de parámetros que entra directo al simulador,
+// así que las diferencias se sienten manejando y no son sólo un número.
+const AUTOS = {
+  calle: {
+    ...TC, nombre: 'Compacto', clase: 'D', precio: 0,
+    masa: 1090, masaSusp: 940, parMax: 195, rpmPar: 4600, rpmCorte: 6200,
+    marchas: [3.55, 2.05, 1.38, 1.03, 0.82], final: 3.94,
+    traccion: 'delantera', mu: 1.02, cargaAero: 0.18, arrastre: 0.86,
+    frenoMax: 2900, kF: 34000, kR: 31000, arbF: 11000, arbR: 7000, h: 0.52,
+    color: 0x9fb2c4,
+  },
+  tc: {
+    ...TC, nombre: 'TC 2000', clase: 'B', precio: 320000, color: 0xd8382f,
+  },
+  gt: {
+    ...TC, nombre: 'GT3', clase: 'A', precio: 780000,
+    masa: 1290, masaSusp: 1105, parMax: 520, rpmPar: 6100, rpmCorte: 7800,
+    marchas: [2.92, 2.05, 1.58, 1.28, 1.06, 0.90], final: 3.44,
+    mu: 1.52, cargaAero: 1.95, arrastre: 0.88, frenoMax: 5600,
+    kF: 74000, kR: 68000, arbF: 26000, arbR: 17000, h: 0.40,
+    color: 0x2f6fd8,
+  },
+  proto: {
+    ...TC, nombre: 'Prototipo', clase: 'S', precio: 1900000,
+    masa: 900, masaSusp: 760, parMax: 610, rpmPar: 7200, rpmCorte: 9200,
+    marchas: [2.75, 1.98, 1.56, 1.29, 1.09, 0.94], final: 3.30,
+    mu: 1.68, cargaAero: 3.4, arrastre: 0.80, frenoMax: 7200,
+    kF: 96000, kR: 90000, arbF: 34000, arbR: 22000, h: 0.33,
+    color: 0xf0c419,
+  },
+};
+
+const ORDEN_AUTOS = ['calle', 'tc', 'gt', 'proto'];
+
+// Mejoras: cada nivel cuesta más y toca el parámetro que corresponde del
+// simulador. No son porcentajes decorativos, cambian cómo anda el auto.
+const MEJORAS = {
+  motor:      { nombre: 'Motor',        max: 5, base: 42000,  desc: 'Más par en todo el régimen' },
+  gomas:      { nombre: 'Gomas',        max: 5, base: 38000,  desc: 'Más agarre en seco' },
+  suspension: { nombre: 'Suspensión',   max: 4, base: 30000,  desc: 'Menos balanceo, apoya antes' },
+  frenos:     { nombre: 'Frenos',       max: 4, base: 26000,  desc: 'Frena más corto' },
+  aero:       { nombre: 'Aerodinámica', max: 4, base: 46000,  desc: 'Más carga en curva rápida' },
+  peso:       { nombre: 'Aligerado',    max: 3, base: 58000,  desc: 'Menos kilos, más de todo' },
+};
+
+function costoMejora(clave, nivelActual) {
+  const m = MEJORAS[clave];
+  if (!m || nivelActual >= m.max) return null;
+  return Math.round(m.base * Math.pow(1.62, nivelActual));
+}
+
+function aplicarMejoras(base, mejoras = {}) {
+  const s = { ...base };
+  const n = (k) => mejoras[k] || 0;
+  s.parMax = base.parMax * (1 + n('motor') * 0.075);
+  s.mu = base.mu * (1 + n('gomas') * 0.042);
+  const sus = 1 + n('suspension') * 0.14;
+  s.kF = base.kF * sus; s.kR = base.kR * sus;
+  s.arbF = base.arbF * sus; s.arbR = base.arbR * sus;
+  s.cF = base.cF * (1 + n('suspension') * 0.09);
+  s.cR = base.cR * (1 + n('suspension') * 0.09);
+  s.frenoMax = base.frenoMax * (1 + n('frenos') * 0.10);
+  s.cargaAero = base.cargaAero * (1 + n('aero') * 0.30);
+  s.arrastre = base.arrastre * (1 + n('aero') * 0.04);
+  const quita = 1 - n('peso') * 0.045;
+  s.masa = base.masa * quita; s.masaSusp = base.masaSusp * quita;
+  s.Izz = base.Izz * quita;
+  return s;
+}
+
+// Puntaje de rendimiento, para emparejar rivales y ordenar el garage.
+function indice(spec) {
+  const potencia = spec.parMax / spec.masa * 1000;
+  const agarre = spec.mu * 100 + spec.cargaAero * 12;
+  const freno = spec.frenoMax / spec.masa * 10;
+  return Math.round(potencia * 1.15 + agarre + freno);
+}
+
+// ===== sim/malla.js =====
+// Carrocería del auto, compartida entre el jugador y los rivales.
+let cache = null;
+function geometria() {
+  if (cache) return cache;
+  const b = new MeshBuilder();
+  const hw = 0.76, hl = 2.15;
+  b.box(-hw, -hl, hw, hl, 0.28, 0.72, 2, 2, 2);
+  b.box(-hw * 0.82, -hl * 0.34, hw * 0.82, hl * 0.52, 0.72, 1.12, 2, 2, 2);
+  b.box(-hw * 1.02, hl - 0.28, hw * 1.02, hl, 0.30, 0.55, 2, 2, 2);
+  const rg = new THREE.CylinderGeometry(0.315, 0.315, 0.26, 14);
+  rg.rotateZ(Math.PI / 2);
+  cache = { cuerpo: b.toGeometry(), rueda: rg };
+  return cache;
+}
+
+const matVidrio = new THREE.MeshLambertMaterial({ color: 0x101418 });
+const matRueda = new THREE.MeshLambertMaterial({ color: 0x15171b });
+const matAla = new THREE.MeshLambertMaterial({ color: 0x1c1f24 });
+
+function construirAuto(color) {
+  const g = geometria();
+  const raiz = new THREE.Group();
+  const pintura = new THREE.MeshLambertMaterial({ color: new THREE.Color(color) });
+  const cuerpo = new THREE.Mesh(g.cuerpo, pintura);
+  cuerpo.castShadow = true; raiz.add(cuerpo);
+
+  const vidrio = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.34, 0.9), matVidrio);
+  vidrio.position.set(0, 0.94, 0.42); raiz.add(vidrio);
+  const ala = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.07, 0.36), matAla);
+  ala.position.set(0, 1.14, -1.97); raiz.add(ala);
+
+  const ruedas = {};
+  for (const [k, lo, la] of [['DI', 1.28, -0.86], ['DD', 1.28, 0.86], ['TI', -1.34, -0.86], ['TD', -1.34, 0.86]]) {
+    const w = new THREE.Mesh(g.rueda, matRueda);
+    w.position.set(la, 0.315, lo);
+    raiz.add(w); ruedas[k] = w;
+  }
+  raiz.userData = { ruedas, pintura };
+  return raiz;
+}
+
 // ===== track/spline.js =====
 // Curva cerrada Catmull-Rom remuestreada por longitud de arco. Que esté
 // parametrizada por METROS y no por el parámetro de la curva es lo que hace
@@ -1002,6 +1123,387 @@ class Piloto {
   }
 }
 
+// ===== race/rival.js =====
+// Rivales cinemáticos: corren sobre la traza con un perfil de velocidad
+// calculado por curvatura, en vez de simular física completa.
+//
+// Es una decisión, no una excusa: un piloto con física completa que sepa
+// recuperarse de un trompo es un proyecto en sí mismo, y esto es lo que usan
+// los arcades de verdad. Se ve bien, no se va nunca de pista, y pelea.
+const COLORES = [0x3aa0ff, 0x35d07f, 0xffc447, 0xb06cff, 0xff6b4a, 0xe8e4d8, 0x18b6a6, 0xff4d8d];
+const NOMBRES = ['Barrales', 'Ferrante', 'Godoy', 'Sarti', 'Ledesma', 'Quiroga', 'Nieto', 'Ávila'];
+
+class Rival {
+  constructor(circuito, escena, i, opciones = {}) {
+    this.c = circuito;
+    this.i = i;
+    this.nombre = NOMBRES[i % NOMBRES.length];
+    this.destreza = opciones.destreza ?? (0.90 + (i % 4) * 0.025);
+    this.topeKmh = opciones.topeKmh ?? 225;
+    this.acel = opciones.acel ?? 7.4;         // m/s² efectivos en salida
+    this.mu = opciones.mu ?? 1.34;
+    this.malla = construirAuto(COLORES[i % COLORES.length]);
+    escena.add(this.malla);
+
+    this.s = 0; this.v = 0; this.carril = 0; this.carrilObj = 0;
+    this.vuelta = 0; this.yaw = 0; this.x = 0; this.z = 0;
+    this.terminado = false; this.tiempo = 0;
+    this.giroRueda = 0;
+  }
+
+  colocar(s, carril) {
+    this.s = ((s % this.c.largo) + this.c.largo) % this.c.largo;
+    this.carril = this.carrilObj = carril;
+    this.v = 0; this.vuelta = 0; this.terminado = false; this.tiempo = 0;
+    this.sincronizar();
+  }
+
+  vMax(curv) {
+    const k = Math.abs(curv);
+    if (k < 1e-5) return 999;
+    return Math.sqrt(this.mu * 9.81 / k) * this.destreza;
+  }
+
+  // Velocidad objetivo: la menor que permita la curva más exigente que viene,
+  // considerando cuánto se puede frenar de acá hasta ahí.
+  objetivo() {
+    const tope = this.topeKmh / 3.6;
+    let v = tope;
+    const desac = this.mu * 8.5;
+    for (let d = 4; d < 260; d += 6) {
+      const vc = this.vMax(this.c.linea.en(this.s + d).curv);
+      if (vc >= tope) continue;
+      // Velocidad máxima ahora para poder llegar a vc dentro de d metros.
+      const permitida = Math.sqrt(vc * vc + 2 * desac * Math.max(0, d - 5));
+      v = Math.min(v, permitida);
+    }
+    return Math.min(v, this.vMax(this.c.linea.en(this.s + 5).curv));
+  }
+
+  update(dt, mundo) {
+    if (this.terminado) { this.sincronizar(); return; }
+    this.tiempo += dt;
+    const L = this.c.largo;
+
+    let obj = this.objetivo();
+
+    // Tráfico: si tengo a alguien pegado adelante en mi mismo carril, levanto
+    // y busco otro carril para pasarlo.
+    let bloqueo = null, gap = 1e9;
+    for (const o of mundo.otros) {
+      if (o === this) continue;
+      let d = o.s - this.s;
+      if (d < -L / 2) d += L;
+      if (d > L / 2) d -= L;
+      if (d > 0 && d < 34 && Math.abs(o.carril - this.carril) < 2.4 && d < gap) { gap = d; bloqueo = o; }
+    }
+    if (bloqueo) {
+      obj = Math.min(obj, bloqueo.v + Math.max(0, (gap - 7)) * 0.55);
+      const ancho = this.c.anchoEn(this.s) / 2 - 1.6;
+      const lado = bloqueo.carril >= 0 ? -1 : 1;
+      this.carrilObj = clamp(bloqueo.carril + lado * 3.0, -ancho, ancho);
+    } else {
+      this.carrilObj *= 0.94;      // vuelve a la traza
+    }
+
+    const acel = obj > this.v ? this.acel * clamp(1 - this.v / (this.topeKmh / 3.6), 0.18, 1)
+                              : -this.mu * 9.0;
+    this.v = Math.max(2, this.v + acel * dt);
+    if (acel < 0) this.v = Math.max(obj, this.v);
+    else this.v = Math.min(obj, this.v);
+
+    const antes = this.s;
+    this.s += this.v * dt;
+    if (this.s >= L) { this.s -= L; this.vuelta++; }
+    this.carril += (this.carrilObj - this.carril) * Math.min(1, dt * 2.2);
+    this.giroRueda += (this.v / 0.315) * dt;
+    this.sincronizar();
+  }
+
+  sincronizar() {
+    const m = this.c.linea.en(this.s);
+    this.x = m.x + m.nx * this.carril;
+    this.z = m.z + m.nz * this.carril;
+    this.yaw = Math.atan2(m.tx, m.tz);
+    this.malla.position.set(this.x, 0, this.z);
+    this.malla.rotation.y = this.yaw;
+    for (const k in this.malla.userData.ruedas)
+      this.malla.userData.ruedas[k].rotation.x = this.giroRueda;
+  }
+
+  get avance() { return this.vuelta * this.c.largo + this.s; }
+  get kmh() { return this.v * 3.6; }
+}
+
+// ===== race/carrera.js =====
+// Estructura de carrera: grilla, largada, vueltas, posiciones y llegada.
+// Sin esto el juego era una pista vacía con un cronómetro.
+class Carrera {
+  constructor(circuito, escena) {
+    this.c = circuito;
+    this.escena = escena;
+    this.rivales = [];
+    this.estado = 'libre';       // libre | cuenta | corriendo | final
+    this.vueltas = 3;
+    this.cuenta = 0;
+    this.tiempo = 0;
+    this.jugador = { vuelta: 0, s: 0, sPrev: 0, terminado: false, tiempo: 0, puesto: 1 };
+    this.resultado = null;
+  }
+
+  preparar(config, jugadorSpec) {
+    const n = config.rivales ?? 5;
+    this.vueltas = config.vueltas ?? 3;
+    this.nombreEvento = config.nombre || 'Carrera';
+    this.premio = config.premio ?? 60000;
+
+    for (const r of this.rivales) this.escena.remove(r.malla);
+    this.rivales = [];
+    const L = this.c.largo;
+    // El jugador larga último: es más divertido tener a quién pasar.
+    for (let i = 0; i < n; i++) {
+      const r = new Rival(this.c, this.escena, i, {
+        destreza: (config.destreza ?? 0.92) + (i - n / 2) * 0.012,
+        topeKmh: config.topeKmh ?? 215,
+        mu: config.mu ?? 1.34,
+        acel: config.acel ?? 7.2,
+      });
+      const fila = Math.floor(i / 2), lado = (i % 2) ? 1 : -1;
+      r.colocar(L - 14 - fila * 9, lado * 2.4);
+      this.rivales.push(r);
+    }
+    const filaJ = Math.floor(n / 2);
+    this.grillaJugador = {
+      s: L - 14 - filaJ * 9,
+      carril: (n % 2) ? 1 * 2.4 : -2.4,
+    };
+    this.estado = 'cuenta';
+    this.cuenta = 3.999;
+    this.tiempo = 0;
+    this.resultado = null;
+    this.jugador = { vuelta: 0, s: this.grillaJugador.s, sPrev: this.grillaJugador.s, terminado: false, tiempo: 0, puesto: n + 1 };
+    return this.grillaJugador;
+  }
+
+  abandonar() {
+    for (const r of this.rivales) this.escena.remove(r.malla);
+    this.rivales = [];
+    this.estado = 'libre';
+    this.resultado = null;
+  }
+
+  get corriendo() { return this.estado === 'corriendo'; }
+  get largando() { return this.estado === 'cuenta'; }
+
+  update(dt, sJugador) {
+    if (this.estado === 'libre' || this.estado === 'final') return null;
+
+    if (this.estado === 'cuenta') {
+      this.cuenta -= dt;
+      if (this.cuenta <= 0) { this.estado = 'corriendo'; this.cuenta = 0; }
+      return null;
+    }
+
+    this.tiempo += dt;
+    const L = this.c.largo;
+    for (const r of this.rivales) r.update(dt, { otros: this.rivales });
+
+    // Vueltas del jugador: cruzar meta hacia adelante.
+    const j = this.jugador;
+    if (!j.terminado) {
+      j.tiempo += dt;
+      if (j.sPrev > L * 0.75 && sJugador < L * 0.25) j.vuelta++;
+      j.sPrev = sJugador;
+      j.s = sJugador;
+    }
+
+    const avanceJ = j.vuelta * L + j.s;
+    const todos = [
+      { nombre: 'VOS', avance: avanceJ, vuelta: j.vuelta, jugador: true, terminado: j.terminado, tiempo: j.tiempo },
+      ...this.rivales.map(r => ({ nombre: r.nombre, avance: r.avance, vuelta: r.vuelta, jugador: false, terminado: r.terminado, tiempo: r.tiempo })),
+    ];
+    todos.sort((a, b) => (b.terminado - a.terminado) || (b.avance - a.avance));
+    this.orden = todos;
+    j.puesto = todos.findIndex(t => t.jugador) + 1;
+
+    // Llegada
+    for (const r of this.rivales)
+      if (!r.terminado && r.vuelta >= this.vueltas) r.terminado = true;
+    if (!j.terminado && j.vuelta >= this.vueltas) {
+      j.terminado = true;
+      this.estado = 'final';
+      const puesto = j.puesto;
+      const factor = [1, 0.62, 0.42, 0.3, 0.22, 0.16, 0.12, 0.1][puesto - 1] ?? 0.08;
+      this.resultado = {
+        puesto, total: todos.length, tiempo: j.tiempo,
+        plata: Math.round(this.premio * factor),
+        xp: Math.round(180 * factor + 40),
+      };
+      return this.resultado;
+    }
+    return null;
+  }
+}
+
+// ===== race/puntaje.js =====
+// Cadenas de habilidad, al estilo Horizon: derrapar, pasar cerca y sostener
+// velocidad suman puntos con un multiplicador que crece mientras no cortes.
+// Chocar o irte al pasto te lo baja. Es lo que hace que manejar sea un juego
+// y no una vuelta de reconocimiento.
+class Puntaje {
+  constructor() {
+    this.banco = 0;          // puntos ya asegurados
+    this.cadena = 0;         // puntos de la cadena en curso
+    this.mult = 1;
+    this.ocio = 0;
+    this.ultimo = '';
+    this.ultimoT = 0;
+    this.cerca = new Map();  // rival -> tiempo del último "casi"
+    this.mejorCadena = 0;
+  }
+
+  aviso(texto) { this.ultimo = texto; this.ultimoT = 1.6; }
+
+  sumar(p, texto) {
+    if (p <= 0) return;
+    this.cadena += p * this.mult;
+    this.mult = Math.min(10, this.mult + p / 900);
+    this.ocio = 0;
+    if (texto) this.aviso(texto);
+  }
+
+  romper(motivo) {
+    if (this.cadena > 0) this.aviso(motivo);
+    this.cadena = 0; this.mult = 1; this.ocio = 0;
+  }
+
+  cobrar() {
+    if (this.cadena > 0) {
+      this.banco += Math.round(this.cadena);
+      this.mejorCadena = Math.max(this.mejorCadena, Math.round(this.cadena));
+    }
+    this.cadena = 0; this.mult = 1;
+  }
+
+  update(dt, mundo) {
+    this.ultimoT = Math.max(0, this.ultimoT - dt);
+    const { auto, enPista, rivales, choque } = mundo;
+    const kmh = auto.kmh;
+
+    if (choque > 4) { this.romper('¡Golpe! Cadena perdida'); return; }
+    if (!enPista) { this.romper('Fuera de pista'); return; }
+
+    // Derrape: ángulo de deriva trasero sostenido con velocidad.
+    const deriva = Math.abs(auto.slipL.TI + auto.slipL.TD) / 2 * 57.3;
+    if (deriva > 11 && kmh > 45 && auto.uso.TI > 0.85) {
+      this.sumar(deriva * kmh * dt * 0.055, null);
+      if (this.ultimoT <= 0) this.aviso('Derrape');
+    }
+
+    // Pasar cerca: te cruzás a menos de 4 metros a buena velocidad.
+    for (const r of rivales) {
+      const d = Math.hypot(r.x - auto.x, r.z - auto.z);
+      const t = this.cerca.get(r) || 0;
+      if (d < 4.2 && kmh > 70 && performance.now() - t > 2200) {
+        this.cerca.set(r, performance.now());
+        this.sumar(240, '¡Casi!');
+      }
+    }
+
+    // Velocidad sostenida.
+    if (kmh > 175) this.sumar((kmh - 175) * dt * 2.2, null);
+
+    // La cadena se cobra sola si dejás de hacer cosas.
+    this.ocio += dt;
+    if (this.ocio > 2.4 && this.cadena > 0) {
+      const p = Math.round(this.cadena);
+      this.cobrar();
+      this.aviso(`+${p.toLocaleString('es-AR')} puntos`);
+    }
+    this.mult = Math.max(1, this.mult - dt * 0.14);
+  }
+
+  get total() { return this.banco + Math.round(this.cadena); }
+}
+
+// ===== race/progreso.js =====
+// Plata, experiencia y garage, guardados en el navegador.
+const CLAVE_rogresojs = 'trazada.progreso.v1';
+
+class Progreso {
+  constructor() {
+    this.plata = 180000;
+    this.xp = 0;
+    this.autos = { calle: { mejoras: {} } };   // arrancás con el compacto
+    this.actual = 'calle';
+    this.mejores = {};
+    this.puntos = 0;
+    this.carreras = { corridas: 0, ganadas: 0 };
+    this.cargar();
+  }
+
+  get nivel() { return Math.floor(Math.sqrt(this.xp / 120)) + 1; }
+  get xpNivel() { const n = this.nivel; return { hecho: this.xp - 120 * (n - 1) ** 2, falta: 120 * (n ** 2 - (n - 1) ** 2) }; }
+
+  tiene(k) { return !!this.autos[k]; }
+  mejorasDe(k) { return (this.autos[k] || {}).mejoras || {}; }
+
+  comprarAuto(k) {
+    const a = AUTOS[k];
+    if (!a || this.tiene(k)) return 'ya lo tenés';
+    if (this.plata < a.precio) return 'sin plata';
+    this.plata -= a.precio;
+    this.autos[k] = { mejoras: {} };
+    this.actual = k;
+    this.guardar();
+    return 'comprado';
+  }
+
+  mejorar(k, clave) {
+    if (!this.tiene(k)) return 'no es tuyo';
+    const m = this.autos[k].mejoras;
+    const nivel = m[clave] || 0;
+    const costo = costoMejora(clave, nivel);
+    if (costo === null) return 'al máximo';
+    if (this.plata < costo) return 'sin plata';
+    this.plata -= costo;
+    m[clave] = nivel + 1;
+    this.guardar();
+    return 'mejorado';
+  }
+
+  premiar(plata, xp) { this.plata += plata; this.xp += xp; this.guardar(); }
+  sumarPuntos(p) { this.puntos += p; }
+
+  registrarVuelta(pista, t) {
+    const k = 'p' + pista;
+    if (this.mejores[k] == null || t < this.mejores[k]) { this.mejores[k] = t; this.guardar(); return true; }
+    return false;
+  }
+
+  guardar() {
+    try {
+      localStorage.setItem(CLAVE_rogresojs, JSON.stringify({
+        v: 1, plata: this.plata, xp: this.xp, autos: this.autos,
+        actual: this.actual, mejores: this.mejores, puntos: this.puntos, carreras: this.carreras,
+      }));
+    } catch (_) {}
+  }
+
+  cargar() {
+    let d;
+    try { d = JSON.parse(localStorage.getItem(CLAVE_rogresojs) || 'null'); } catch (_) { return; }
+    if (!d || d.v !== 1) return;
+    this.plata = d.plata ?? this.plata;
+    this.xp = d.xp ?? 0;
+    this.autos = d.autos || this.autos;
+    this.actual = this.autos[d.actual] ? d.actual : Object.keys(this.autos)[0];
+    this.mejores = d.mejores || {};
+    this.puntos = d.puntos || 0;
+    this.carreras = d.carreras || this.carreras;
+  }
+}
+
 // ===== ui/hud.js =====
 const CSS = `
 #hud{position:fixed;inset:0;pointer-events:none;color:#eef1f5;
@@ -1026,11 +1528,29 @@ const CSS = `
 #gomas b i{position:absolute;inset:auto 0 0 0;display:block;background:#5ad1a0}
 #gomas .rot{grid-column:1 / span 2;text-align:center;font-size:10px;opacity:.55;letter-spacing:.6px}
 #mapa{top:14px;right:14px;padding:8px;line-height:0}
-#aviso{top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:20px;
+#aviso{top:22%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:19px;
   font-weight:700;opacity:0;transition:opacity .25s;padding:12px 22px}
 #volante{bottom:16px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.75;text-align:center}
 #volante .b{width:210px;height:5px;background:rgba(255,255,255,.14);border-radius:3px;margin:5px auto 0;position:relative}
 #volante .b i{position:absolute;top:-3px;width:3px;height:11px;background:#ffc447;border-radius:2px;left:50%}
+#carrera{top:14px;left:50%;transform:translateX(-50%);text-align:center;padding:9px 18px;display:none}
+#carrera.on{display:block}
+#carrera .pos{font-size:30px;font-weight:800;line-height:1}
+#carrera .pos i{font-style:normal;font-size:14px;opacity:.55;font-weight:600}
+#carrera .vta{opacity:.65;font-size:12px;margin-top:2px;font-variant-numeric:tabular-nums}
+#cuenta{top:34%;left:50%;transform:translate(-50%,-50%);font-size:92px;font-weight:900;
+  color:#ffc447;display:none;padding:0;background:none;border:none;text-shadow:0 4px 24px rgba(0,0,0,.7)}
+#cuenta.on{display:block}
+#tabla{top:190px;left:14px;min-width:200px;display:none;padding:9px 11px}
+#tabla.on{display:block}
+#tabla .r{display:flex;gap:9px;font-size:12px;padding:2px 0;font-variant-numeric:tabular-nums}
+#tabla .r.yo{color:#ffc447;font-weight:700}
+#tabla .r .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cadena{bottom:214px;right:16px;text-align:right;display:none;padding:9px 13px;min-width:132px}
+#cadena.on{display:block}
+#cadena .pts{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;color:#ffc447;line-height:1.1}
+#cadena .m{font-size:13px;opacity:.75}
+#cadena .q{font-size:11px;opacity:.6;margin-top:3px}
 #ayuda{position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5}
 kbd{background:rgba(255,255,255,.14);border-radius:3px;padding:1px 5px;font:inherit;font-size:10px}
 `;
@@ -1058,11 +1578,22 @@ class Hud {
       </div>
       <div class="p" id="mapa"><canvas id="v-mapa" width="190" height="190"></canvas></div>
       <div class="p" id="aviso"><span id="v-aviso"></span></div>
+      <div class="p" id="carrera">
+        <div class="pos"><span id="v-pos">1</span><i>/<span id="v-total">6</span></i></div>
+        <div class="vta">VUELTA <span id="v-lap">1</span>/<span id="v-laps">3</span></div>
+      </div>
+      <div id="cuenta"><span id="v-cuenta">3</span></div>
+      <div class="p" id="tabla"><div id="v-tabla"></div></div>
+      <div class="p" id="cadena">
+        <div class="pts" id="v-cad">0</div>
+        <div class="m">x<span id="v-mult">1.0</span></div>
+        <div class="q" id="v-quehizo"></div>
+      </div>
       <div class="p" id="volante">
         <span id="v-vol">Teclado</span>
         <div class="b"><i id="v-volpos"></i></div>
       </div>
-      <div id="ayuda"><kbd>W A S D</kbd> manejar · <kbd>R</kbd> volver a pista · <kbd>C</kbd> calibrar volante</div>`;
+      <div id="ayuda"><kbd>Tab</kbd> menú y garage · <kbd>W A S D</kbd> manejar · <kbd>R</kbd> volver a pista · <kbd>C</kbd> calibrar volante</div>`;
     document.body.appendChild(r);
     this.el = (id) => document.getElementById(id);
     this.ctx = this.el('v-mapa').getContext('2d');
@@ -1098,6 +1629,38 @@ class Hud {
     av.style.opacity = g.avisoT > 0 ? '1' : '0';
     if (g.avisoT > 0) this.el('v-aviso').innerHTML = g.aviso;
 
+    // --- Carrera ---
+    const c = g.carrera;
+    const enCarrera = c.estado === 'corriendo' || c.estado === 'cuenta' || c.estado === 'final';
+    this.el('carrera').classList.toggle('on', enCarrera);
+    this.el('tabla').classList.toggle('on', enCarrera && !!c.orden);
+    this.el('cuenta').classList.toggle('on', c.estado === 'cuenta');
+    if (c.estado === 'cuenta') {
+      const n = Math.ceil(c.cuenta);
+      this.el('v-cuenta').textContent = n > 3 ? '3' : n <= 0 ? '¡YA!' : String(n);
+    }
+    if (enCarrera) {
+      this.el('v-pos').textContent = c.jugador.puesto;
+      this.el('v-total').textContent = (c.rivales.length + 1);
+      this.el('v-lap').textContent = Math.min(c.vueltas, c.jugador.vuelta + 1);
+      this.el('v-laps').textContent = c.vueltas;
+      if (c.orden) {
+        this.el('v-tabla').innerHTML = c.orden.map((o, i) =>
+          `<div class="r ${o.jugador ? 'yo' : ''}"><span>${i + 1}</span><span class="n">${o.nombre}</span><span>v${o.vuelta + 1}</span></div>`
+        ).join('');
+      }
+    }
+
+    // --- Cadena de habilidad ---
+    const pj = g.puntaje;
+    const activa = pj.cadena > 0 || pj.ultimoT > 0;
+    this.el('cadena').classList.toggle('on', activa);
+    if (activa) {
+      this.el('v-cad').textContent = Math.round(pj.cadena).toLocaleString('es-AR');
+      this.el('v-mult').textContent = pj.mult.toFixed(1);
+      this.el('v-quehizo').textContent = pj.ultimoT > 0 ? pj.ultimo : '';
+    }
+
     this.dibujarMapa(g);
   }
 
@@ -1123,18 +1686,174 @@ class Hud {
     c.strokeStyle = '#f2efe6'; c.lineWidth = 2;
     c.beginPath(); c.arc(meta[0], meta[1], 3.5, 0, Math.PI * 2); c.stroke();
 
+    for (const r of g.carrera.rivales) {
+      const q = tf(r.x, r.z);
+      c.fillStyle = '#7fd4ff';
+      c.beginPath(); c.arc(q[0], q[1], 2.8, 0, Math.PI * 2); c.fill();
+    }
     const p = tf(g.auto.x, g.auto.z);
     c.fillStyle = '#ffc447';
     c.beginPath(); c.arc(p[0], p[1], 4, 0, Math.PI * 2); c.fill();
   }
 }
 
+// ===== ui/menu.js =====
+const plata = (n) => '$' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+// Eventos del campeonato. Cada uno es una pista distinta (la semilla manda) con
+// su clase mínima, sus vueltas y su premio.
+const EVENTOS = [
+  { id: 1, nombre: 'Debut en el autódromo', pista: 7,  vueltas: 2, clase: 'D', premio: 90000,  destreza: 0.80, topeKmh: 165, mu: 1.08, acel: 5.4 },
+  { id: 2, nombre: 'Copa Costanera',        pista: 21, vueltas: 3, clase: 'D', premio: 140000, destreza: 0.85, topeKmh: 180, mu: 1.16, acel: 6.0 },
+  { id: 3, nombre: 'Trofeo Sudestada',      pista: 99, vueltas: 3, clase: 'B', premio: 260000, destreza: 0.91, topeKmh: 212, mu: 1.34, acel: 7.2 },
+  { id: 4, nombre: 'Gran Premio del Río',   pista: 4,  vueltas: 4, clase: 'B', premio: 380000, destreza: 0.94, topeKmh: 222, mu: 1.40, acel: 7.6 },
+  { id: 5, nombre: 'Mil Kilómetros',        pista: 55, vueltas: 5, clase: 'A', premio: 640000, destreza: 0.96, topeKmh: 246, mu: 1.52, acel: 8.6 },
+  { id: 6, nombre: 'Desafío Prototipos',    pista: 12, vueltas: 4, clase: 'S', premio: 1100000, destreza: 0.98, topeKmh: 272, mu: 1.66, acel: 9.8 },
+];
+const RANGO = { D: 0, C: 1, B: 2, A: 3, S: 4 };
+const habilitado = (ev, spec) => RANGO[spec.clase] >= RANGO[ev.clase];
+
+const CSS_uimenujs = `
+#menu{position:fixed;inset:0;z-index:70;display:none;place-content:center;
+  background:rgba(8,11,16,.9);overflow:auto;padding:24px 0}
+#menu.on{display:grid}
+#menu .caja{width:min(860px,92vw);pointer-events:auto}
+#menu h2{margin:0 0 4px;font-size:26px;font-weight:800;letter-spacing:-.6px}
+#menu .sub{opacity:.6;font-size:13px;margin-bottom:18px}
+#menu .barra{display:flex;gap:18px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+#menu .chip{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);
+  border-radius:9px;padding:8px 13px;font-variant-numeric:tabular-nums}
+#menu .chip b{color:#ffc447}
+#menu .tabs{display:flex;gap:8px;margin-bottom:16px}
+#menu .tabs button{flex:0 0 auto}
+#menu button{font:inherit;color:#eef1f5;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.12);border-radius:9px;padding:9px 15px;cursor:pointer;transition:.15s}
+#menu button:hover{background:rgba(255,255,255,.15)}
+#menu button.on{background:#ffc447;color:#1b1408;border-color:#ffc447;font-weight:700}
+#menu button:disabled{opacity:.35;cursor:not-allowed}
+#menu .lista{display:grid;gap:9px}
+#menu .fila{display:flex;align-items:center;gap:14px;background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.09);border-radius:11px;padding:12px 15px}
+#menu .fila .crece{flex:1;min-width:0}
+#menu .fila .t{font-weight:700}
+#menu .fila .d{opacity:.58;font-size:12px;margin-top:2px}
+#menu .fila.bloq{opacity:.42}
+#menu .pill{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:rgba(255,196,71,.22);color:#ffc447}
+#menu .num{font-variant-numeric:tabular-nums;font-weight:700}
+#menu .cerrar{margin-top:18px;opacity:.6;font-size:12px;text-align:center}
+`;
+
+class Menu {
+  constructor(juego) {
+    this.g = juego;
+    this.tab = 'eventos';
+    const st = document.createElement('style'); st.textContent = CSS_uimenujs; document.head.appendChild(st);
+    this.el = document.createElement('div'); this.el.id = 'menu';
+    document.body.appendChild(this.el);
+    this.el.addEventListener('click', (e) => this.click(e));
+  }
+
+  abrir(on) { this.el.classList.toggle('on', on); if (on) this.render(); }
+  get abierto() { return this.el.classList.contains('on'); }
+
+  click(e) {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const { accion, valor, extra } = b.dataset;
+    const g = this.g, p = g.progreso;
+    if (accion === 'tab') { this.tab = valor; this.render(); return; }
+    if (accion === 'correr') { g.empezarCarrera(+valor); this.abrir(false); return; }
+    if (accion === 'practicar') { g.practicar(+valor); this.abrir(false); return; }
+    if (accion === 'usar') { p.actual = valor; p.guardar(); g.rearmarAuto(); this.render(); return; }
+    if (accion === 'comprar') { g.decir(this.texto(p.comprarAuto(valor), AUTOS[valor].nombre), 3); g.rearmarAuto(); this.render(); return; }
+    if (accion === 'mejorar') { g.decir(this.texto(p.mejorar(valor, extra), MEJORAS[extra].nombre), 3); g.rearmarAuto(); this.render(); return; }
+    if (accion === 'cerrar') { this.abrir(false); }
+  }
+
+  texto(r, que) {
+    if (r === 'comprado') return `Compraste el ${que}`;
+    if (r === 'mejorado') return `${que} mejorado`;
+    if (r === 'sin plata') return 'No te alcanza';
+    if (r === 'al máximo') return `${que} ya está al máximo`;
+    return r;
+  }
+
+  render() {
+    const g = this.g, p = g.progreso;
+    const spec = g.specActual();
+    const xn = p.xpNivel;
+    const tabs = [['eventos', 'Eventos'], ['garage', 'Garage'], ['taller', 'Taller']];
+
+    let cuerpo = '';
+    if (this.tab === 'eventos') {
+      cuerpo = `<div class="lista">` + EVENTOS.map(ev => {
+        const ok = habilitado(ev, spec);
+        const mejor = p.mejores['p' + ev.pista];
+        return `<div class="fila ${ok ? '' : 'bloq'}">
+          <div class="crece">
+            <div class="t">${ev.nombre} <span class="pill">clase ${ev.clase}</span></div>
+            <div class="d">Pista ${ev.pista} · ${ev.vueltas} vueltas · premio ${plata(ev.premio)}${mejor ? ' · tu mejor vuelta ' + reloj(mejor) : ''}</div>
+          </div>
+          <button data-accion="practicar" data-valor="${ev.id}">Practicar</button>
+          <button class="on" data-accion="correr" data-valor="${ev.id}" ${ok ? '' : 'disabled'}>Correr</button>
+        </div>`;
+      }).join('') + `</div>`;
+      if (!EVENTOS.some(ev => habilitado(ev, spec)))
+        cuerpo += `<div class="cerrar">Necesitás un auto de clase superior. Pasá al Garage.</div>`;
+    } else if (this.tab === 'garage') {
+      cuerpo = `<div class="lista">` + ORDEN_AUTOS.map(k => {
+        const a = AUTOS[k], tengo = p.tiene(k), usando = p.actual === k;
+        const idx = indice(tengo ? aplicarMejoras(a, p.mejorasDe(k)) : a);
+        return `<div class="fila">
+          <div class="crece">
+            <div class="t">${a.nombre} <span class="pill">clase ${a.clase}</span></div>
+            <div class="d">Índice ${idx} · ${a.traccion} · ${Math.round(a.masa)} kg${tengo ? '' : ' · ' + plata(a.precio)}</div>
+          </div>
+          ${tengo
+            ? `<button class="${usando ? 'on' : ''}" data-accion="usar" data-valor="${k}">${usando ? 'En uso' : 'Usar'}</button>`
+            : `<button data-accion="comprar" data-valor="${k}" ${p.plata >= a.precio ? '' : 'disabled'}>Comprar</button>`}
+        </div>`;
+      }).join('') + `</div>`;
+    } else {
+      const k = p.actual, mej = p.mejorasDe(k);
+      cuerpo = `<div class="lista">` + Object.entries(MEJORAS).map(([clave, m]) => {
+        const nivel = mej[clave] || 0;
+        const costo = costoMejora(clave, nivel);
+        return `<div class="fila">
+          <div class="crece">
+            <div class="t">${m.nombre} <span class="num">${'▮'.repeat(nivel)}${'▯'.repeat(m.max - nivel)}</span></div>
+            <div class="d">${m.desc}${costo === null ? ' · al máximo' : ' · ' + plata(costo)}</div>
+          </div>
+          <button data-accion="mejorar" data-valor="${k}" data-extra="${clave}"
+            ${costo !== null && p.plata >= costo ? '' : 'disabled'}>Mejorar</button>
+        </div>`;
+      }).join('') + `</div>
+        <div class="cerrar">Índice actual del ${AUTOS[k].nombre}: <b>${indice(spec)}</b> (de fábrica ${indice(AUTOS[k])})</div>`;
+    }
+
+    this.el.innerHTML = `<div class="caja">
+      <h2>TRAZADA</h2>
+      <div class="sub">Campeonato · nivel ${p.nivel}</div>
+      <div class="barra">
+        <div class="chip">Plata <b>${plata(p.plata)}</b></div>
+        <div class="chip">Nivel <b>${p.nivel}</b> · ${xn.hecho}/${xn.falta} xp</div>
+        <div class="chip">Puntos <b>${p.puntos.toLocaleString('es-AR')}</b></div>
+        <div class="chip">Auto <b>${AUTOS[p.actual].nombre}</b></div>
+        <div class="chip">Carreras <b>${p.carreras.ganadas}</b>/${p.carreras.corridas}</div>
+      </div>
+      <div class="tabs">${tabs.map(([id, t]) =>
+        `<button class="${this.tab === id ? 'on' : ''}" data-accion="tab" data-valor="${id}">${t}</button>`).join('')}
+        <button data-accion="cerrar" style="margin-left:auto">Cerrar (Tab)</button>
+      </div>
+      ${cuerpo}
+    </div>`;
+  }
+}
+
 // ===== main.js =====
-// La física corre a paso FIJO de 400 Hz, desacoplada del dibujo. Esto no es
-// un capricho: a 60 Hz el volante se siente gomoso y el neumático pierde el
-// pico. Es la diferencia entre un simulador y un jueguito.
+// La física corre a paso FIJO de 400 Hz, desacoplada del dibujo: a 60 Hz el
+// volante se siente gomoso y el neumático pierde el pico de agarre.
 const HZ = 400, DT = 1 / HZ;
-const SEMILLA = Number(new URLSearchParams(location.search).get('pista') || 7);
 
 class Juego {
   async init() {
@@ -1143,8 +1862,8 @@ class Juego {
       requestAnimationFrame(() => requestAnimationFrame(r));
     });
 
-    await paso('Trazando el circuito…');
-    this.circuito = generarCircuito(SEMILLA);
+    await paso('Abriendo el garage…');
+    this.progreso = new Progreso();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
@@ -1156,93 +1875,130 @@ class Juego {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x8fb6d9);
-    this.scene.fog = new THREE.Fog(0x8fb6d9, 320, 1500);
+    this.scene.fog = new THREE.Fog(0x8fb6d9, 340, 1600);
     this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 3000);
-
-    await paso('Asfaltando…');
-    construirCircuito(this.circuito, this.scene);
-
     this.scene.add(new THREE.HemisphereLight(0xbdd6f5, 0x4a5240, 1.15));
     const sol = new THREE.DirectionalLight(0xfff2d8, 1.9);
-    sol.position.set(220, 340, 140);
-    this.scene.add(sol);
+    sol.position.set(220, 340, 140); this.scene.add(sol);
+    this.mallaPista = null;
+    // Se crea antes de rearmarAuto(): colocarEnGrilla lo usa.
+    this.camPos = new THREE.Vector3();
+    this.sActual = 0; this.acumulado = 0; this.choque = 0;
+
+    await paso('Trazando el circuito…');
+    this.pista = 7;
+    this.cargarPista(7);
 
     await paso('Bajando el auto del camión…');
-    this.auto = new Vehicle(TC);
-    this.colocarEnGrilla();
-    this.mallaAuto = this.construirAuto();
-    this.scene.add(this.mallaAuto);
+    this.auto = null; this.mallaAuto = null;
+    this.rearmarAuto();
 
     this.wheel = new Wheel();
-    this.timing = new Timing(this.circuito, SEMILLA);
     this.hud = new Hud();
+    this.menu = new Menu(this);
+    this.carrera = new Carrera(this.circuito, this.scene);
+    this.puntaje = new Puntaje();
     this.aviso = ''; this.avisoT = 0;
-    this.sActual = 0;
-    this.acumulado = 0;
-    this.camPos = new THREE.Vector3();
+    this.modo = 'practica';
 
     addEventListener('resize', () => this.onResize());
     addEventListener('keydown', (e) => {
-      if (e.code === 'KeyR') this.colocarEnPista();
+      if (e.code === 'Tab') { e.preventDefault(); this.alternarMenu(); }
+      if (e.code === 'KeyR') this.volverAPista();
       if (e.code === 'KeyC') this.calibrar();
+      if (e.code === 'Escape' && this.carrera.estado !== 'libre') this.terminarCarrera(true);
     });
 
     document.getElementById('splash').classList.add('listo');
-    this.decir(this.wheel.conectado ? 'Volante detectado' : 'Sin volante: se juega con W A S D', 3);
+    this.menu.abrir(true);
     this.last = performance.now();
     requestAnimationFrame(this.loop.bind(this));
   }
 
   decir(t, s = 2.5) { this.aviso = t; this.avisoT = s; }
 
-  colocarEnGrilla() {
-    const m = this.circuito.linea.en(this.circuito.largo - 40);
-    this.auto.x = m.x; this.auto.z = m.z;
-    this.auto.yaw = Math.atan2(m.tx, m.tz);
-    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+  specActual() {
+    const k = this.progreso.actual;
+    return aplicarMejoras(AUTOS[k], this.progreso.mejorasDe(k));
   }
 
-  // Volver a pista mirando hacia adelante, sin perder la posición de vuelta.
-  colocarEnPista() {
+  cargarPista(semilla) {
+    if (this.mallaPista) { this.scene.remove(this.mallaPista); }
+    this.pista = semilla;
+    this.circuito = generarCircuito(semilla);
+    this.mallaPista = construirCircuito(this.circuito, this.scene);
+    this.timing = new Timing(this.circuito, semilla);
+    if (this.carrera) this.carrera.c = this.circuito;
+    this.hud && (this.hud._lim = null);
+  }
+
+  // Rearma el auto del jugador con el modelo y las mejoras actuales.
+  rearmarAuto() {
+    const spec = this.specActual();
+    const x = this.auto ? this.auto.x : 0, z = this.auto ? this.auto.z : 0, yaw = this.auto ? this.auto.yaw : 0;
+    this.auto = new Vehicle(spec, x, z, yaw);
+    if (this.mallaAuto) this.scene.remove(this.mallaAuto);
+    this.mallaAuto = construirAuto(AUTOS[this.progreso.actual].color);
+    this.scene.add(this.mallaAuto);
+    this.ruedas = this.mallaAuto.userData.ruedas;
+    if (this.circuito) this.colocarEnGrilla();
+  }
+
+  alternarMenu() {
+    const abrir = !this.menu.abierto;
+    this.menu.abrir(abrir);
+    if (abrir && this.carrera.corriendo) this.decir('La carrera sigue corriendo', 2);
+  }
+
+  colocarEnGrilla(s = null, carril = 0) {
+    const m = this.circuito.linea.en(s == null ? this.circuito.largo - 26 : s);
+    this.auto.x = m.x + m.nx * carril; this.auto.z = m.z + m.nz * carril;
+    this.auto.yaw = Math.atan2(m.tx, m.tz);
+    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+    this.auto.marcha = 1;
+    for (const k in this.auto.w) this.auto.w[k] = 0;
+    this.sActual = ((this.circuito.largo + (s == null ? -26 : s)) % this.circuito.largo);
+    this.camPos.set(0, 0, 0);
+  }
+
+  volverAPista() {
     const m = this.circuito.linea.en(this.sActual);
     this.auto.x = m.x; this.auto.z = m.z;
     this.auto.yaw = Math.atan2(m.tx, m.tz);
-    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
-    this.auto.roll = this.auto.pitch = this.auto.zs = 0;
-    this.auto.droll = this.auto.dpitch = this.auto.dzs = 0;
-    for (const k of ['DI', 'DD', 'TI', 'TD']) this.auto.w[k] = 0;
+    this.auto.u = Math.min(this.auto.u, 14); this.auto.v = 0; this.auto.r = 0;
+    this.auto.zs = this.auto.pitch = this.auto.roll = 0;
+    this.auto.dzs = this.auto.dpitch = this.auto.droll = 0;
+    for (const k in this.auto.w) this.auto.w[k] = this.auto.u / this.auto.s.rueda;
     this.timing.valida = false;
+    this.puntaje.romper('Volviste a pista');
     this.decir('De vuelta en pista (vuelta invalidada)', 2);
   }
 
-  construirAuto() {
-    const g = new THREE.Group();
-    const b = new MeshBuilder();
-    const hw = 0.76, hl = 2.15;   // más angosta que la trocha: las ruedas tienen que asomar
-    b.box(-hw, -hl, hw, hl, 0.28, 0.72, 2, 2, 2);
-    b.box(-hw * 0.82, -hl * 0.34, hw * 0.82, hl * 0.52, 0.72, 1.12, 2, 2, 2);
-    b.box(-hw * 1.02, hl - 0.28, hw * 1.02, hl, 0.30, 0.55, 2, 2, 2);
-    const cuerpo = new THREE.Mesh(b.toGeometry(), new THREE.MeshLambertMaterial({ color: 0xd8382f }));
-    cuerpo.castShadow = true; g.add(cuerpo);
+  practicar(id) {
+    const ev = EVENTOS.find(e => e.id === id);
+    this.carrera.abandonar();
+    this.modo = 'practica';
+    if (ev.pista !== this.pista) this.cargarPista(ev.pista);
+    this.colocarEnGrilla();
+    this.decir(`Práctica libre · ${ev.nombre}`, 3);
+  }
 
-    const vidrio = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.34, 0.9),
-      new THREE.MeshLambertMaterial({ color: 0x101418 }));
-    vidrio.position.set(0, 0.94, 0.42); g.add(vidrio);
+  empezarCarrera(id) {
+    const ev = EVENTOS.find(e => e.id === id);
+    if (ev.pista !== this.pista) this.cargarPista(ev.pista);
+    this.modo = 'carrera';
+    this.evento = ev;
+    const g = this.carrera.preparar(ev, this.specActual());
+    this.colocarEnGrilla(g.s, g.carril);
+    this.puntaje = new Puntaje();
+    this.progreso.carreras.corridas++;
+    this.decir(`${ev.nombre} · ${ev.vueltas} vueltas`, 3);
+  }
 
-    const alerón = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.07, 0.36),
-      new THREE.MeshLambertMaterial({ color: 0x1c1f24 }));
-    alerón.position.set(0, 1.14, -hl + 0.18); g.add(alerón);
-
-    const rg = new THREE.CylinderGeometry(0.315, 0.315, 0.26, 14);
-    rg.rotateZ(Math.PI / 2);
-    const rm = new THREE.MeshLambertMaterial({ color: 0x15171b });
-    this.ruedas = {};
-    for (const [k, lo, la] of [['DI', 1.28, -0.86], ['DD', 1.28, 0.86], ['TI', -1.34, -0.86], ['TD', -1.34, 0.86]]) {
-      const w = new THREE.Mesh(rg, rm);
-      w.position.set(la, 0.315, lo);
-      g.add(w); this.ruedas[k] = w;
-    }
-    return g;
+  terminarCarrera(abandono) {
+    if (abandono) this.decir('Abandonaste la carrera', 3);
+    this.carrera.abandonar();
+    this.modo = 'practica';
   }
 
   onResize() {
@@ -1254,63 +2010,100 @@ class Juego {
   calibrar() {
     if (this.wheel.calibrando) return;
     this.wheel.empezarCalibracion();
-    this.decir('CALIBRANDO: girá el volante de tope a tope y pisá los tres pedales a fondo', 6);
+    this.decir('CALIBRANDO: girá el volante de tope a tope y pisá los tres pedales', 6);
     setTimeout(() => {
       const ejes = this.wheel.terminarCalibracion();
       this.decir(ejes && ejes.length
-        ? `Calibrado: ${ejes.length} ejes reconocidos (${ejes.map(e => 'eje ' + e.i).join(', ')})`
+        ? `Calibrado: ${ejes.length} ejes reconocidos`
         : 'No se movió ningún eje. ¿Está conectado el volante?', 5);
     }, 6000);
   }
 
   fisica(dt) {
-    const e = this.wheel.estado(this.auto.kmh);
     const a = this.auto;
-    // La convención interna es que mandos.volante positivo dobla a la
-    // izquierda; el jugador espera que girar a la derecha doble a la derecha.
+    const largando = this.carrera.largando;
+    const e = this.wheel.estado(a.kmh);
+    // La convención interna es que volante positivo dobla a la izquierda.
     a.mandos.volante = -e.volante;
-    a.mandos.acelerador = e.acelerador;
-    a.mandos.freno = e.freno;
+    a.mandos.acelerador = largando ? 0 : e.acelerador;
+    a.mandos.freno = largando ? 1 : e.freno;
     a.mandos.mano = e.mano;
 
-    // El agarre cambia según dónde estén las ruedas: asfalto, piano o pasto.
     const p = this.circuito.linea.proyectar(a.x, a.z, this.sActual);
     this.sActual = ((p.s % this.circuito.largo) + this.circuito.largo) % this.circuito.largo;
     const sup = superficie(this.circuito, p.lateral, this.sActual);
-    a.s = { ...TC, mu: TC.mu * sup.mu };
     this.superficie = sup;
+    const base = this.specActual();
+    a.s = { ...base, mu: base.mu * sup.mu };
 
     a.paso(dt);
-    this.timing.update(dt, this.sActual, sup.tipo === 'asfalto' || sup.tipo === 'piano');
+    this.enPista = sup.tipo === 'asfalto' || sup.tipo === 'piano';
+    this.timing.update(dt, this.sActual, this.enPista);
+
+    const r = this.carrera.update(dt, this.sActual);
+    if (r) this.cerrarResultado(r);
+
+    // Choques contra los rivales: te empujan y te cortan la cadena.
+    this.choque = Math.max(0, this.choque - dt * 8);
+    for (const riv of this.carrera.rivales) {
+      const dx = a.x - riv.x, dz = a.z - riv.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 3.4 && d > 0.01) {
+        const nx = dx / d, nz = dz / d, pen = 3.4 - d;
+        a.x += nx * pen * 0.8; a.z += nz * pen * 0.8;
+        const vn = a.u * 0.2;
+        a.v += nx * 2.4; a.u *= 0.985;
+        this.choque = Math.max(this.choque, Math.abs(vn) * 0.6 + 3);
+        riv.v *= 0.985;
+      }
+    }
+  }
+
+  cerrarResultado(r) {
+    this.puntaje.cobrar();
+    this.progreso.sumarPuntos(this.puntaje.banco);
+    const bonoPuntos = Math.round(this.puntaje.banco / 12);
+    this.progreso.premiar(r.plata + bonoPuntos, r.xp);
+    if (r.puesto === 1) this.progreso.carreras.ganadas++;
+    this.progreso.guardar();
+    this.resultado = { ...r, puntos: this.puntaje.banco, bonoPuntos };
+    this.decir(`${r.puesto}º de ${r.total} · ${reloj(r.tiempo)} · +${(r.plata + bonoPuntos).toLocaleString('es-AR')}`, 8);
+    setTimeout(() => { this.terminarCarrera(false); this.menu.abrir(true); }, 5200);
   }
 
   update(dtReal) {
     if (this.wheel.calibrando) this.wheel.pasoCalibracion(dtReal);
     this.avisoT = Math.max(0, this.avisoT - dtReal);
 
-    // Acumulador de paso fijo: la física no depende de los cuadros por segundo.
-    this.acumulado += Math.min(dtReal, 0.25);
-    let pasos = 0;
-    while (this.acumulado >= DT && pasos < 240) {
-      const antes = this.timing.vuelta;
-      this.fisica(DT);
-      if (this.timing.vuelta > antes && this.timing.ultima != null) {
-        const r = this.timing.vueltas[this.timing.vueltas.length - 1];
-        this.decir(r.valida
-          ? (this.timing.mejor === r.t ? `RÉCORD · ${reloj(r.t)}` : `Vuelta ${reloj(r.t)}`)
-          : `Vuelta inválida (${reloj(r.t)}) — te fuiste de pista`, 3.5);
+    if (!this.menu.abierto) {
+      this.acumulado += Math.min(dtReal, 0.25);
+      let pasos = 0;
+      while (this.acumulado >= DT && pasos < 240) {
+        const antes = this.timing.vuelta;
+        this.fisica(DT);
+        if (this.timing.vuelta > antes && this.timing.ultima != null) {
+          const v = this.timing.vueltas[this.timing.vueltas.length - 1];
+          if (v.valida && this.progreso.registrarVuelta(this.pista, v.t))
+            this.decir(`RÉCORD · ${reloj(v.t)}`, 3);
+          else if (v.valida) this.decir(`Vuelta ${reloj(v.t)}`, 2.5);
+          else this.decir(`Vuelta inválida (${reloj(v.t)})`, 2.5);
+        }
+        this.acumulado -= DT;
+        pasos++;
       }
-      this.acumulado -= DT;
-      pasos++;
+      this.puntaje.update(dtReal, {
+        auto: this.auto, enPista: this.enPista !== false,
+        rivales: this.carrera.rivales, choque: this.choque,
+      });
     }
 
     const a = this.auto;
     this.mallaAuto.position.set(a.x, -a.zs * 0.6, a.z);
     this.mallaAuto.rotation.set(a.pitch * 0.55, a.yaw, -a.roll * 0.85, 'YXZ');
-    for (const k of ['DI', 'DD', 'TI', 'TD']) {
+    for (const k in this.ruedas) {
       const w = this.ruedas[k];
       w.rotation.x = a.w[k] * 0.35;
-      w.rotation.y = k[0] === 'D' ? a.mandos.volante * TC.volanteMax : 0;
+      w.rotation.y = k[0] === 'D' ? a.mandos.volante * a.s.volanteMax : 0;
     }
 
     this.camara(dtReal);
@@ -1318,21 +2111,16 @@ class Juego {
   }
 
   camara(dt) {
-    const a = this.auto;
-    const f = a.adelante();
+    const a = this.auto, f = a.adelante();
     const vel = clamp(a.velocidad / 60, 0, 1);
-    const dist = lerp(8.2, 11.4, vel);
-    const alto = lerp(3.3, 4.0, vel);
-    const objetivo = new THREE.Vector3(a.x - f.x * dist, alto, a.z - f.z * dist);
-    if (this.camPos.lengthSq() === 0) this.camPos.copy(objetivo);
-    this.camPos.lerp(objetivo, Math.min(1, dt * 7));
+    const dist = lerp(8.2, 11.4, vel), alto = lerp(3.3, 4.0, vel);
+    const obj = new THREE.Vector3(a.x - f.x * dist, alto, a.z - f.z * dist);
+    if (this.camPos.lengthSq() === 0) this.camPos.copy(obj);
+    this.camPos.lerp(obj, Math.min(1, dt * 7));
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(a.x + f.x * 9, 0.9, a.z + f.z * 9);
-    // El campo de visión se abre con la velocidad: da sensación de vértigo.
     const fov = lerp(60, 76, vel);
-    if (Math.abs(this.camera.fov - fov) > 0.15) {
-      this.camera.fov = fov; this.camera.updateProjectionMatrix();
-    }
+    if (Math.abs(this.camera.fov - fov) > 0.15) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
   }
 
   loop(now) {

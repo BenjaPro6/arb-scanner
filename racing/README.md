@@ -15,10 +15,36 @@ npm start       # http://127.0.0.1:8124
 doble clic y trae Three.js de un CDN. Cambiá de circuito con `?pista=21` en la
 URL: cada número da un trazado distinto y determinista.
 
+## El juego
+
+Campeonato de **seis eventos**, cada uno en un circuito distinto, con clase
+mínima y premio propio. Largás último en una grilla de seis y tenés que
+remontar. Cuenta regresiva, vueltas, posiciones en vivo y premio por puesto.
+
+**Rivales.** Cinco autos que corren de verdad: calculan su velocidad de paso
+por cada curva según el radio y su destreza, frenan con anticipación, se
+bloquean entre ellos y cambian de carril para pasarse. Van cinemáticos sobre la
+traza, no con física completa — es la decisión que toman los arcades, y es por
+qué nunca se van de pista ni hacen un trompo eterno.
+
+**Cadenas de habilidad**, al estilo Horizon: derrapar, pasar cerca de un rival
+y sostener velocidad suman puntos con un multiplicador que crece mientras no
+cortes. Chocar o irte al pasto te lo baja. Los puntos se convierten en plata.
+
+**Garage y taller.** Cuatro autos —Compacto, TC 2000, GT3 y Prototipo— que se
+compran con lo ganado, y seis mejoras por auto: motor, gomas, suspensión,
+frenos, aerodinámica y aligerado. **No son porcentajes decorativos**: cada nivel
+toca el parámetro que corresponde del simulador, así que el auto anda distinto.
+Un TC de fábrica tiene índice 515; con todo mejorado, 774.
+
+**Progresión.** Plata, experiencia, niveles y mejores vueltas por circuito,
+todo guardado en el navegador.
+
 ## Controles
 
 | Control | Qué hace |
 |---|---|
+| `Tab` | menú, eventos, garage y taller |
 | `W` / `S` | acelerar y frenar |
 | `A` / `D` | doblar |
 | `Espacio` | freno de mano |
@@ -106,11 +132,14 @@ código. Encontraron cuatro bugs reales durante el desarrollo:
 ## Lo que falta
 
 - **Force feedback** (ver arriba): es lo único que separa esto de un simulador.
-- **Rivales.** `src/race/piloto.js` tiene el andamiaje de un piloto automático
-  por persecución pura, pero **no completa una vuelta**: se va en las curvas
-  encadenadas y no sabe recuperarse cuando queda cruzado. Está en el repo
-  marcado como incompleto, y no está enchufado al juego.
-- Traza optimizada, desgaste de gomas, combustible, daño, y más de un auto.
+- **Mundo abierto.** Hoy son circuitos cerrados; Horizon es libre. Es la
+  diferencia más grande que queda, y es un proyecto en sí mismo.
+- **Rivales con física completa.** Los actuales son cinemáticos y funcionan,
+  pero no se los puede chocar para sacarlos de la traza.
+  `src/race/piloto.js` tiene el andamiaje de un piloto con física completa que
+  **no completa una vuelta**: queda marcado como incompleto y sin enchufar.
+- Desgaste de gomas, combustible, daño, clima, y tipos de evento variados
+  (sprint punto a punto, zonas de derrape, radares).
 
 ## Licencia
 
