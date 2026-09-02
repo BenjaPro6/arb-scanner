@@ -35,6 +35,11 @@ respaldo). Se regenera con `npm run bundle`.
 | `Rueda` | acercar y alejar la cámara |
 | `Q` `E` | girar la cámara sin mouse |
 | `Clic izquierdo` | disparar |
+| `1` `2` `3` | cambiar de arma |
+| `G` | robar el local en el que estás parado |
+| `B` | comprar chaleco en el kiosco |
+| `M` | cambiar de emisora |
+| `Tab` | abrir el mapa (pausa el juego) |
 | `H` | vender dólares en la cueva |
 
 Manejando, si soltás el mouse la cámara vuelve sola atrás del auto.
@@ -70,11 +75,32 @@ pintura y se te va la cana. Si te quedás quieto con un patrullero encima —a p
 o con el auto parado— te terminan agarrando: perdés parte de la guita y el
 cargador.
 
-**Armas.** Pistola con hitscan: el tiro sale hacia donde mirás y busca el
+**Armas.** Arsenal de tres —pistola, escopeta y subfusil— con hitscan: el tiro sale hacia donde mirás y busca el
 blanco más cercano dentro de un cono angosto, sin atravesar edificios. Se
-compra en las armerías (círculo rojo) y se paga en pesos, así que la inflación
-también te encarece las balas. De dos estrellas para arriba la policía te
-devuelve el fuego.
+compran en las armerías (círculo rojo) y se pagan en pesos, así que la inflación
+también te encarece las balas. La escopeta abre seis perdigones y es letal de
+cerca; el subfusil es automático. De dos estrellas para arriba la policía te
+devuelve el fuego, y hay chaleco para aguantarlo.
+
+**Negocios.** Se compran ocho locales repartidos por la ciudad —parrilla, bar de
+Palermo, remisería, cueva de la City— y cada uno rinde una renta por minuto,
+indexada. La renta no le gana a la inflación: la frena. Para acumular en serio
+hay que combinar negocios con dólares.
+
+**Atracos.** Con un fierro encima podés robar kioscos y armerías en el acto:
+plata ya, y la cana arriba. El local se enfría después de un par de minutos.
+
+**Radio.** Cuatro emisoras sintetizadas en vivo —cumbia, rock nacional, tango y
+electrónica—, cada una con su tempo, su escala, su progresión y su patrón de
+percusión, agendadas sobre el reloj de WebAudio. Sigue sin haber un archivo de
+audio en el repo.
+
+**GPS y mapa.** El minimapa dibuja la ruta real por calles hasta el objetivo,
+calculada con el mismo A* que usa la policía, así que esquiva los piquetes. Con
+Tab se abre el mapa completo de la ciudad y el mundo se congela.
+
+**Guardado.** Se autoguarda solo en el navegador cada veinte segundos y al
+cerrar la pestaña: plata, dólares, arsenal, negocios, salud y posición.
 
 **Peatones.** Caminan el perímetro de su manzana, doblan en las esquinas, se
 asustan de lo que se mueve rápido y salen corriendo con las manos en la cabeza.

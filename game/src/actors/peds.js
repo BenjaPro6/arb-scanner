@@ -52,6 +52,18 @@ export class Peds {
     return false;
   }
 
+  // Saca a alguien del auto y lo deja corriendo. Se usa al robar un fierro
+  // con el conductor adentro.
+  expulsar(x, z) {
+    const p = this.list.find(q => !q.active) || this.list[0];
+    p.active = true; p.mesh.visible = true; p.mesh.rotation.x = 0;
+    p.state = 'flee'; p.fear = 5.5; p.downTime = 0;
+    p.x = x; p.z = z; p.yaw = this.rng() * TAU;
+    p.block = this.city.blockAt(x, z) || p.block;
+    p.side = 0; p.t = 0.5; p.dir = 1; p.speed = 1.3;
+    return p;
+  }
+
   update(dt, world) {
     const { px, pz, threats } = world;
     const q = {};

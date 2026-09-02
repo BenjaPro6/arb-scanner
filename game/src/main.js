@@ -17,8 +17,9 @@ import { Police } from './systems/police.js';
 import { Economy } from './systems/economy.js';
 import { Places } from './systems/places.js';
 import { Missions } from './systems/missions.js';
-import { Weapons, ARMA } from './systems/weapons.js';
+import { Weapons, ARMAS, ORDEN_ARMAS } from './systems/weapons.js';
 import { Hud } from './ui/hud.js';
+import { Save } from './systems/save.js';
 
 const SEED = 1987;
 
@@ -76,11 +77,16 @@ class Game {
     this.weapons = new Weapons(this.scene, this);
     this.missions = new Missions(this);
     this.hud = new Hud();
+    this.save = new Save(this);
+    this.gps = { ruta: null, t: 0 };
+    this.mapaAbierto = false;
 
     this.hour = CFG.START_HOUR;
+    if (this.save.cargar()) this.missions.say('Partida cargada. Se autoguarda sola.', 4);
+    addEventListener('beforeunload', () => this.save.guardar());
     this.piquete = { edge: null, t: 26, mesh: null };
     this.tmpCars = [];
-    this.stats = { fps: 60, acc: 0, frames: 0 };
+    this.stats = { robos: 0, misiones: 0 };
 
     addEventListener('resize', () => this.onResize());
     const kick = () => { this.audio.start(); removeEventListener('pointerdown', kick); removeEventListener('keydown', kick); };
@@ -269,10 +275,16 @@ class Game {
     if (!best) return;
 
     if (best.kind === 'traffic') {
+      // Si estaba andando, adentro había alguien: sale disparado a la vereda.
+      const conductor = best.obj.mode === 'lane' && best.car.speed > 0.4;
       best.obj.mode = 'own';
       best.obj.active = true;
-      this.police.crime('robo');
-      this.missions.say(`Te llevaste un ${best.car.spec.name}.`, 2.2);
+      this.police.crime('robo', conductor ? 1.35 : 1);
+      if (conductor) {
+        const r = best.car.right();
+        this.peds.expulsar(best.car.x + r.x * 2.2, best.car.z + r.z * 2.2);
+        this.missions.say(`Bajaste al chofer y te llevaste el ${best.car.spec.name}.`, 3);
+      } else this.missions.say(`Te llevaste un ${best.car.spec.name}.`, 2.2);
     } else if (best.kind === 'police') {
       this.police.crime('robo', 2);
       this.police.retire(best.obj);
@@ -281,50 +293,114 @@ class Game {
     this.player.enter(best.obj, best.car);
   }
 
+  // Un solo lugar decide qué ofrece el punto en el que estás parado. El texto
+  // del cartel sale de acá, así que nunca dice una cosa y hace otra.
   interactPlaces() {
     const p = this.player.pos;
+    const usar = this.input.hit('use');
+    const aPie = this.player.mode === 'foot';
+    let cartel = null;
+
     const cueva = this.places.near(p.x, p.z, 'cueva');
     if (cueva) {
-      if (this.input.hit('use')) {
+      cartel = `Cueva · F comprar dólares a ${pesos(this.economy.blue * 1.025)} · H vender`;
+      if (usar) {
         const got = this.economy.buyUsd(this.economy.pesos);
-        if (got > 0) this.missions.say(`Compraste US$${got.toFixed(0)} a ${pesos(this.economy.blue * 1.025)}.`, 3);
+        if (got > 0) this.missions.say(`Compraste US$${got.toFixed(0)}.`, 3);
+        else this.missions.say('No tenés pesos para cambiar.', 2);
       }
       if (this.input.hit('horn')) {
         const got = this.economy.sellUsd(this.economy.usd);
         if (got > 0) this.missions.say(`Vendiste y te llevaste ${pesos(got)}.`, 3);
       }
-      if (!this.cuevaHint) { this.missions.say('Cueva: F para comprar dólares, H para vender.', 2.5); this.cuevaHint = true; }
-    } else this.cuevaHint = false;
+    }
 
     const arm = this.places.near(p.x, p.z, 'armeria');
-    if (arm && this.player.mode === 'foot') {
-      if (this.input.hit('use')) {
-        const r = this.weapons.comprar(this.economy);
-        if (r === 'comprada') this.missions.say('Pistola comprada. Clic izquierdo para tirar.', 4);
-        else if (r === 'municion') this.missions.say('Cargaste 24 balas.', 2.5);
+    if (arm && aPie) {
+      const k = this.compraArma();
+      const s = ARMAS[k];
+      const precio = this.weapons.tiene(k) ? s.bala * s.cargador * 2 : s.precio;
+      cartel = `Armería · F: ${this.weapons.tiene(k) ? 'munición de ' + s.nombre : s.nombre} (${pesos(precio * this.economy.priceIndex)})`
+             + (this.weapons.armado ? ' · G robar' : '');
+      if (usar) {
+        const r = this.weapons.comprar(k, this.economy);
+        if (r === 'comprada') this.missions.say(`${s.nombre} comprada. Teclas 1-3 para cambiar de arma.`, 4);
+        else if (r === 'municion') this.missions.say(`Cargaste munición de ${s.nombre}.`, 2.5);
         else this.missions.say('No te alcanza.', 2.5);
-      } else if (!this.armHint) {
-        this.armHint = true;
-        this.missions.say(this.weapons.armado
-          ? `Armería: F para comprar 24 balas (${pesos(ARMA.bala * 24 * this.economy.priceIndex)}).`
-          : `Armería: F para comprar la pistola (${pesos(ARMA.precio * this.economy.priceIndex)}).`, 3.5);
       }
-    } else this.armHint = false;
+      if (this.input.hit('robar')) this.robar(arm, 90000, 2.4);
+    }
+
+    const kio = this.places.near(p.x, p.z, 'kiosco');
+    if (kio && aPie) {
+      cartel = `Kiosco · F comer (${pesos(6000 * this.economy.priceIndex)}) · B chaleco (${pesos(34000 * this.economy.priceIndex)})`
+             + (this.weapons.armado ? ' · G robar' : '');
+      if (usar) {
+        if (this.player.health > 96) this.missions.say('Estás entero, no hace falta.', 2);
+        else if (this.economy.charge(6000)) {
+          this.player.health = Math.min(100, this.player.health + 35);
+          this.missions.say('Comiste algo. Recuperaste salud.', 2.5);
+        } else this.missions.say('No te alcanza ni para un alfajor.', 2.5);
+      }
+      if (this.input.hit('chaleco')) {
+        if (this.player.armor > 96) this.missions.say('Ya tenés el chaleco puesto.', 2);
+        else if (this.economy.charge(34000)) {
+          this.player.armor = 100;
+          this.missions.say('Chaleco puesto. Aguanta el primer cargador.', 3);
+        } else this.missions.say('No te alcanza para el chaleco.', 2.5);
+      }
+      if (this.input.hit('robar')) this.robar(kio, 26000, 1.6);
+    }
+
+    const neg = this.places.near(p.x, p.z, 'negocio');
+    if (neg) {
+      cartel = neg.dueno
+        ? `${neg.nombre} · tuyo · rinde ${pesos(neg.renta * this.economy.priceIndex)} por minuto`
+        : `${neg.nombre} en venta · F comprar (${pesos(neg.precio * this.economy.priceIndex)}) · rinde ${pesos(neg.renta * this.economy.priceIndex)}/min`;
+      if (usar && !neg.dueno) {
+        const r = this.economy.comprar(neg);
+        if (r === 'comprado') {
+          neg.mesh.material.color.setHex(0x35d07f);
+          this.missions.say(`Compraste ${neg.nombre}. Ahora te entra plata sola.`, 4.5);
+        } else this.missions.say('No te alcanza para ese negocio.', 3);
+      }
+    }
 
     const taller = this.places.near(p.x, p.z, 'taller');
     if (taller && this.player.mode === 'drive' && this.player.car.speed < 6) {
-      if (this.tallerCool > 0) return;
-      const cost = 15000;
-      if (this.economy.charge(cost)) {
-        this.player.car.damage = 0;
-        const had = this.police.wanted();
-        this.police.clear();
-        this.tallerCool = 4;
-        this.missions.say(had ? 'Chapa, pintura y a otra cosa. Se te fue la cana.' : 'Quedó como nuevo.', 3.5);
-      } else if (!this.tallerWarn) {
-        this.missions.say('No te alcanza para el taller.', 2.5); this.tallerWarn = true;
+      cartel = 'Taller · chapa, pintura y te sacan la cana de encima';
+      if (this.tallerCool <= 0) {
+        if (this.economy.charge(15000)) {
+          this.player.car.damage = 0;
+          const had = this.police.wanted();
+          this.police.clear();
+          this.tallerCool = 4;
+          this.missions.say(had ? 'Chapa, pintura y a otra cosa. Se te fue la cana.' : 'Quedó como nuevo.', 3.5);
+        } else if (!this.tallerWarn) {
+          this.missions.say('No te alcanza para el taller.', 2.5); this.tallerWarn = true;
+        }
       }
     } else this.tallerWarn = false;
+
+    this.cartel = cartel;
+  }
+
+  // Qué arma te vende la armería: la siguiente que no tengas.
+  compraArma() {
+    for (const k of ORDEN_ARMAS) if (!this.weapons.tiene(k)) return k;
+    return this.weapons.actual || 'pistola';
+  }
+
+  // Atraco a mano armada: plata en el acto y la cana encima.
+  robar(lugar, montoReal, estrellas) {
+    if (!this.weapons.armado) { this.missions.say('Para robar hace falta un fierro.', 2.5); return; }
+    if (lugar.robadoT > 0) { this.missions.say('Acá ya cobraste. Volvé más tarde.', 2.5); return; }
+    const botin = this.economy.pay(montoReal * this.rng.range(0.7, 1.35));
+    lugar.robadoT = 150;
+    this.police.heat = Math.max(this.police.heat, estrellas);
+    this.missions.say(`Te llevaste ${pesos(botin)}. Salí de acá.`, 4);
+    this.audio.bang(6);
+    this.stats.robos = (this.stats.robos || 0) + 1;
   }
 
   bustedOrDead() {
@@ -339,7 +415,7 @@ class Game {
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
     if (this.player.health <= 0) {
-      this.player.health = 100;
+      this.player.health = 100; this.player.armor = 0;
       const fine = this.economy.pesos * 0.20;
       this.economy.pesos -= fine;
       this.police.clear();
@@ -347,6 +423,27 @@ class Game {
       this.missions.say('Zafaste de milagro. La cuenta del hospital no.', 5);
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
+  }
+
+  // Ruta por calles hasta el objetivo, recalculada de a poco. Reusa el mismo
+  // A* que usa la policía, así que el GPS te manda por donde se puede ir de
+  // verdad: esquiva los piquetes.
+  actualizarGps(dt) {
+    this.gps.t -= dt;
+    if (this.gps.t > 0) return;
+    this.gps.t = 1.5;
+    const obj = this.objetivo();
+    if (!obj) { this.gps.ruta = null; return; }
+    const p = this.player.pos;
+    const desde = this.roads.nodeNear(p.x, p.z);
+    const hasta = this.roads.nodeNear(obj.x, obj.z);
+    const ruta = this.roads.path(desde, hasta);
+    this.gps.ruta = ruta ? ruta.map(id => this.roads.nodes[id]) : null;
+  }
+
+  objetivo() {
+    if (this.missions.current && this.meta.mesh.visible) return this.meta;
+    return this.places.laburo;
   }
 
   respawn() {
@@ -362,6 +459,12 @@ class Game {
 
   update(dt) {
     const input = this.input;
+    if (input.hit('mapa')) this.mapaAbierto = !this.mapaAbierto;
+    if (this.mapaAbierto) {
+      // Con el mapa abierto el mundo se congela, como corresponde.
+      this.hud.update(this); input.endFrame();
+      return;
+    }
     if (input.hit('use')) this.pendingUse = true;
 
     this.economy.update(dt);
@@ -462,24 +565,35 @@ class Game {
     }
     this.peds.runOver(pc ? cars.filter(c => c !== pc) : cars);
 
-    // Disparar y resolver los tiros de la policía.
+    // Cambio de arma y disparo.
+    if (input.hit('arma1')) this.weapons.elegir('pistola');
+    if (input.hit('arma2')) this.weapons.elegir('escopeta');
+    if (input.hit('arma3')) this.weapons.elegir('uzi');
+    if (input.hit('recargar')) this.weapons.siguiente();
+    if (input.hit('radio') && this.audio.radio)
+      this.missions.say('Radio: ' + this.audio.radio.cambiar(), 3);
+
     if (input.is('fire')) {
-      const r = this.weapons.disparar(dt);
+      const r = this.weapons.disparar(dt, !input.hit('fire'));
       if (r === 'sin balas' && !this.avisoBalas) {
-        this.avisoBalas = true; this.missions.say('Sin balas. Comprá en la armería (círculo rojo).', 3);
+        this.avisoBalas = true; this.missions.say('Sin balas. Comprá munición en la armería.', 3);
       }
       if (r && r !== 'sin balas') this.avisoBalas = false;
-      if (r === 'peaton') this.missions.say('Le disparaste a alguien.', 2);
-    } else this.weapons.cool = Math.max(0, this.weapons.cool - dt);
+    } else { this.weapons.soltar(); this.weapons.cool = Math.max(0, this.weapons.cool - dt); }
     this.weapons.update(dt);
 
     for (const t of this.police.disparos) {
       if (this.weapons.bloqueado(t.x, t.z, t.tx, t.tz, this.solidsNear)) continue;
-      this.player.health -= t.dano;
+      this.player.danar(t.dano);
       this.player.shake = Math.max(this.player.shake, 0.35);
       this.audio.bang(5);
     }
 
+    // Los negocios robados se enfrían solos.
+    for (const pl of this.places.list) if (pl.robadoT > 0) pl.robadoT -= dt;
+
+    this.actualizarGps(dt);
+    this.save.update(dt);
     this.missions.update(dt);
     this.bustedOrDead();
     this.player.updateCamera(this.camera, dt, input);

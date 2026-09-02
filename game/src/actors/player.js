@@ -16,6 +16,7 @@ export class Player {
     this.car = null;            // instancia de Car cuando manejo
     this.enterCooldown = 0;
     this.health = 100;
+    this.armor = 0;
     // Pistola en la mano derecha: sólo se ve cuando estás armado.
     this.gun = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.13, 0.26),
@@ -35,6 +36,15 @@ export class Player {
   // quedaba en 0.4 para siempre y nunca más podías bajarte del auto.
   tick(dt) {
     this.enterCooldown = Math.max(0, this.enterCooldown - dt);
+  }
+
+  // El chaleco se come el daño primero; lo que sobra va a la salud.
+  danar(n) {
+    if (this.armor > 0) {
+      const absorbe = Math.min(this.armor, n * 0.75);
+      this.armor -= absorbe; n -= absorbe;
+    }
+    this.health -= n;
   }
   get speed() { return this.mode === 'drive' ? this.car.speed : Math.hypot(this.vx, this.vz); }
 

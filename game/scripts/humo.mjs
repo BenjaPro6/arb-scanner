@@ -100,12 +100,24 @@ const modo = await p.evaluate(() => window.game.player.mode);
 // Armar al jugador y encarar el HUD completo: flecha, munición, estrellas.
 await p.evaluate(() => {
   const g = window.game;
-  g.economy.pesos = 400000;
-  g.weapons.comprar(g.economy);
+  g.economy.pesos = 2400000;
+  g.weapons.comprar('pistola', g.economy);
+  g.weapons.comprar('escopeta', g.economy);
+  g.weapons.comprar('uzi', g.economy);
+  g.weapons.elegir('uzi');
+  g.player.armor = 72;
+  g.economy.comprar(g.places.negocios[0]);
+  g.economy.comprar(g.places.negocios[3]);
   g.police.heat = 3;
+  g.gps.t = 0;
 });
-await p.waitForTimeout(1400);
+await p.waitForTimeout(2200);
 await p.screenshot({ path: shot.replace('.png', '-pie.png') });
+// Y el mapa grande, que es pantalla nueva.
+await p.evaluate(() => { window.game.mapaAbierto = true; });
+await p.waitForTimeout(900);
+await p.screenshot({ path: shot.replace('.png', '-mapa.png') });
+await p.evaluate(() => { window.game.mapaAbierto = false; });
 console.log('capturas:', shot, '| -dia | -pie (modo:', modo + ')');
 if (errs.length) { console.log('\n=== ERRORES ===\n' + errs.join('\n')); await b.close(); process.exit(1); }
 console.log('\nSIN ERRORES');

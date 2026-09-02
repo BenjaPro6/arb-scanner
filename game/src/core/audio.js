@@ -1,6 +1,8 @@
 // Todo el sonido es sintetizado en vivo con WebAudio: no hay un solo archivo
 // de audio en el repo. Motor por oscilador, sirena de dos tonos, goma quemada
 // por ruido filtrado y golpes por ráfaga de ruido.
+import { Radio } from './radio.js';
+
 export class Audio {
   constructor() { this.ready = false; }
 
@@ -42,6 +44,8 @@ export class Audio {
     this.sirenOsc.frequency.value = 700;
     this.sirenOsc.connect(this.siren); this.siren.connect(this.master); this.sirenOsc.start();
 
+    this.radio = new Radio(ctx, this.master, n);
+
     this.t = 0;
     this.ready = true;
   }
@@ -80,6 +84,11 @@ export class Audio {
       this.eng.gain.setTargetAtTime(0, now, 0.15);
     }
     this.skid.gain.setTargetAtTime((st.slip || 0) * 0.20, now, 0.06);
+
+    if (this.radio) {
+      this.radio.prender(!!st.driving);
+      this.radio.update();
+    }
 
     const sp = st.sirenProximity || 0;
     if (sp > 0) {

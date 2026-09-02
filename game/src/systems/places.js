@@ -7,6 +7,8 @@ const TYPES = {
   taller: { color: 0x3aa0ff, label: 'Taller', r: 4.2 },
   laburo: { color: 0xffb020, label: 'Laburo', r: 4.6 },
   armeria:{ color: 0xc0392b, label: 'Armería', r: 3.6 },
+  kiosco: { color: 0xf0e14a, label: 'Kiosco', r: 3.2 },
+  negocio:{ color: 0xb06cff, label: 'Negocio', r: 4.0 },
   meta:   { color: 0xff5470, label: 'Destino', r: 4.0 },
 };
 
@@ -30,6 +32,23 @@ export class Places {
       this.add('armeria', city.randomBlock(b => b.district === 'once' || b.district === 'boca'));
     this.armeriaCerca = this.add('armeria',
       city.blockAt(city.center.x - 130, city.center.z + 60) || city.randomBlock(b => b.kind === 'edificado'));
+
+    // Kioscos por toda la ciudad: comida, chaleco, y algo para afanar.
+    for (let i = 0; i < 10; i++) this.add('kiosco', city.randomBlock(b => b.kind === 'edificado'));
+    this.add('kiosco', city.blockAt(city.center.x + 130, city.center.z - 40) || city.randomBlock(b => b.kind === 'edificado'));
+
+    // Negocios en venta. Cada uno rinde una renta por minuto, indexada.
+    const rubros = [
+      ['Parrilla', 220000, 5200], ['Kiosco 24hs', 150000, 3600], ['Taller mecánico', 320000, 7400],
+      ['Bar de Palermo', 480000, 10800], ['Playa de estacionamiento', 260000, 6100],
+      ['Cueva de la City', 900000, 21000], ['Remisería', 380000, 8700], ['Cancha de paddle', 300000, 6800],
+    ];
+    this.negocios = [];
+    for (const [nombre, precio, renta] of rubros) {
+      const pl = this.add('negocio', city.randomBlock(b => b.kind === 'edificado'));
+      pl.nombre = nombre; pl.precio = precio; pl.renta = renta; pl.dueno = false;
+      this.negocios.push(pl);
+    }
   }
 
   add(type, block, x, z) {

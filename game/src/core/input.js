@@ -10,8 +10,13 @@ const MAP = {
   KeyF: 'use',
   KeyQ: 'camleft', KeyE: 'camright',
   KeyH: 'horn',
+  KeyM: 'radio',
   ControlLeft: 'fire', ControlRight: 'fire',   // alternativa al clic
   KeyR: 'recargar',
+  KeyG: 'robar',
+  KeyB: 'chaleco',
+  Tab: 'mapa',
+  Digit1: 'arma1', Digit2: 'arma2', Digit3: 'arma3',
   KeyC: 'camera',
 };
 

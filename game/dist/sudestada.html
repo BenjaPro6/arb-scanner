@@ -165,8 +165,13 @@ const MAP = {
   KeyF: 'use',
   KeyQ: 'camleft', KeyE: 'camright',
   KeyH: 'horn',
+  KeyM: 'radio',
   ControlLeft: 'fire', ControlRight: 'fire',   // alternativa al clic
   KeyR: 'recargar',
+  KeyG: 'robar',
+  KeyB: 'chaleco',
+  Tab: 'mapa',
+  Digit1: 'arma1', Digit2: 'arma2', Digit3: 'arma3',
   KeyC: 'camera',
 };
 
@@ -243,10 +248,163 @@ class Input {
   endFrame() { this.pressed.clear(); }
 }
 
+// ===== core/radio.js =====
+// Radio del auto, sintetizada en vivo. No hay un solo archivo de audio: cada
+// emisora es un tempo, una escala, una progresión y un patrón de percusión,
+// agendados sobre el reloj de WebAudio con anticipación.
+//
+// No reemplaza música grabada, pero le da al manejo lo que le faltaba: que
+// pase algo mientras vas por la avenida.
+const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
+
+// Progresión menor clásica: i - VI - III - VII. Sirve para las cuatro.
+const PROG = [0, 8, 3, 10];
+
+const EMISORAS = [
+  {
+    id: 'cumbia', nombre: 'FM Bombón · cumbia', bpm: 96, raiz: 45, onda: 'square',
+    bajo: [0, 0, 7, 0, 0, 7, 0, 0, 0, 0, 7, 0, 0, 7, 0, 0].map(v => v === 0 ? 0 : 7),
+    bajoHit: [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    acordeHit: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+    bombo: [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+    hat: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], hatVol: 0.05,
+    redoble: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+  },
+  {
+    id: 'rock', nombre: 'Rock Nacional 101.5', bpm: 132, raiz: 40, onda: 'sawtooth',
+    bajoHit: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+    acordeHit: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0],
+    bombo: [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    hat: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0], hatVol: 0.07,
+    redoble: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+    quinta: true,
+  },
+  {
+    id: 'tango', nombre: 'Tango de la Ciudad', bpm: 68, raiz: 45, onda: 'triangle',
+    bajoHit: [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    acordeHit: [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    bombo: [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    hat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], hatVol: 0,
+    redoble: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+    staccato: true,
+  },
+  {
+    id: 'electro', nombre: 'Subte FM · electrónica', bpm: 124, raiz: 38, onda: 'sawtooth',
+    bajoHit: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    acordeHit: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+    bombo: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    hat: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0], hatVol: 0.09,
+    redoble: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  },
+];
+
+class Radio {
+  constructor(ctx, destino, ruido) {
+    this.ctx = ctx; this.ruido = ruido;
+    this.out = ctx.createGain(); this.out.gain.value = 0;
+    // Un pasabajos suave: suena como saliendo de los parlantes de un Falcon.
+    this.filtro = ctx.createBiquadFilter();
+    this.filtro.type = 'lowpass'; this.filtro.frequency.value = 3200;
+    this.filtro.connect(this.out); this.out.connect(destino);
+
+    this.emisora = 0;
+    this.paso = 0;
+    this.compas = 0;
+    this.proximo = 0;
+    this.encendida = false;
+    this.volumen = 0.16;
+  }
+
+  prender(on) {
+    this.encendida = on;
+    this.out.gain.setTargetAtTime(on ? this.volumen : 0, this.ctx.currentTime, 0.25);
+    if (on && this.proximo < this.ctx.currentTime) this.proximo = this.ctx.currentTime + 0.06;
+  }
+
+  cambiar() {
+    this.emisora = (this.emisora + 1) % EMISORAS.length;
+    this.paso = 0; this.compas = 0;
+    this.proximo = this.ctx.currentTime + 0.06;
+    return EMISORAS[this.emisora].nombre;
+  }
+
+  get nombre() { return EMISORAS[this.emisora].nombre; }
+
+  nota(freq, t, dur, tipo, vol, filtro) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator(); o.type = tipo; o.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+    o.connect(g); g.connect(filtro || this.filtro);
+    o.start(t); o.stop(t + dur + 0.03);
+  }
+
+  percusion(t, tipo) {
+    const ctx = this.ctx;
+    if (tipo === 'bombo') {
+      const o = ctx.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(120, t);
+      o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.5, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      o.connect(g); g.connect(this.filtro); o.start(t); o.stop(t + 0.26);
+      return;
+    }
+    const s = ctx.createBufferSource(); s.buffer = this.ruido;
+    const f = ctx.createBiquadFilter();
+    f.type = tipo === 'hat' ? 'highpass' : 'bandpass';
+    f.frequency.value = tipo === 'hat' ? 7000 : 1900;
+    const g = ctx.createGain();
+    const dur = tipo === 'hat' ? 0.045 : 0.16;
+    g.gain.setValueAtTime(tipo === 'hat' ? 0.10 : 0.26, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    s.connect(f); f.connect(g); g.connect(this.filtro);
+    s.start(t); s.stop(t + dur + 0.02);
+  }
+
+  // Agenda los pasos que caen dentro de la ventana de anticipación.
+  update() {
+    if (!this.encendida) return;
+    const ctx = this.ctx;
+    const e = EMISORAS[this.emisora];
+    const paso16 = 60 / e.bpm / 4;
+    const horizonte = ctx.currentTime + 0.28;
+
+    while (this.proximo < horizonte) {
+      const t = Math.max(this.proximo, ctx.currentTime + 0.02);
+      const i = this.paso;
+      const grado = PROG[this.compas % PROG.length];
+      const raiz = e.raiz + grado;
+
+      if (e.bajoHit[i]) {
+        const salto = (i % 8 === 6) ? 7 : 0;
+        this.nota(midi(raiz + salto), t, e.staccato ? 0.16 : paso16 * 1.7, e.onda, 0.20);
+      }
+      if (e.acordeHit[i]) {
+        const dur = e.staccato ? 0.14 : paso16 * 2.2;
+        const acorde = e.quinta ? [0, 7] : [0, 3, 7];   // menor, o quinta pelada en el rock
+        for (const iv of acorde)
+          this.nota(midi(raiz + 12 + iv), t, dur, e.onda === 'sawtooth' ? 'sawtooth' : 'triangle', 0.075);
+      }
+      if (e.bombo[i]) this.percusion(t, 'bombo');
+      if (e.hat[i] && e.hatVol > 0) this.percusion(t, 'hat');
+      if (e.redoble[i]) this.percusion(t, 'redoble');
+
+      this.proximo += paso16;
+      this.paso++;
+      if (this.paso >= 16) { this.paso = 0; this.compas++; }
+    }
+  }
+}
+
 // ===== core/audio.js =====
 // Todo el sonido es sintetizado en vivo con WebAudio: no hay un solo archivo
 // de audio en el repo. Motor por oscilador, sirena de dos tonos, goma quemada
 // por ruido filtrado y golpes por ráfaga de ruido.
+
 class Audio {
   constructor() { this.ready = false; }
 
@@ -288,6 +446,8 @@ class Audio {
     this.sirenOsc.frequency.value = 700;
     this.sirenOsc.connect(this.siren); this.siren.connect(this.master); this.sirenOsc.start();
 
+    this.radio = new Radio(ctx, this.master, n);
+
     this.t = 0;
     this.ready = true;
   }
@@ -326,6 +486,11 @@ class Audio {
       this.eng.gain.setTargetAtTime(0, now, 0.15);
     }
     this.skid.gain.setTargetAtTime((st.slip || 0) * 0.20, now, 0.06);
+
+    if (this.radio) {
+      this.radio.prender(!!st.driving);
+      this.radio.update();
+    }
 
     const sp = st.sirenProximity || 0;
     if (sp > 0) {
@@ -1812,6 +1977,18 @@ class Peds {
     return false;
   }
 
+  // Saca a alguien del auto y lo deja corriendo. Se usa al robar un fierro
+  // con el conductor adentro.
+  expulsar(x, z) {
+    const p = this.list.find(q => !q.active) || this.list[0];
+    p.active = true; p.mesh.visible = true; p.mesh.rotation.x = 0;
+    p.state = 'flee'; p.fear = 5.5; p.downTime = 0;
+    p.x = x; p.z = z; p.yaw = this.rng() * TAU;
+    p.block = this.city.blockAt(x, z) || p.block;
+    p.side = 0; p.t = 0.5; p.dir = 1; p.speed = 1.3;
+    return p;
+  }
+
   update(dt, world) {
     const { px, pz, threats } = world;
     const q = {};
@@ -1920,6 +2097,7 @@ class Player {
     this.car = null;            // instancia de Car cuando manejo
     this.enterCooldown = 0;
     this.health = 100;
+    this.armor = 0;
     // Pistola en la mano derecha: sólo se ve cuando estás armado.
     this.gun = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.13, 0.26),
@@ -1939,6 +2117,15 @@ class Player {
   // quedaba en 0.4 para siempre y nunca más podías bajarte del auto.
   tick(dt) {
     this.enterCooldown = Math.max(0, this.enterCooldown - dt);
+  }
+
+  // El chaleco se come el daño primero; lo que sobra va a la salud.
+  danar(n) {
+    if (this.armor > 0) {
+      const absorbe = Math.min(this.armor, n * 0.75);
+      this.armor -= absorbe; n -= absorbe;
+    }
+    this.health -= n;
   }
   get speed() { return this.mode === 'drive' ? this.car.speed : Math.hypot(this.vx, this.vz); }
 
@@ -2077,7 +2264,8 @@ class Economy {
     this.priceIndex = 1;
     this.blueNoise = 0;
     this.rate = Math.log(1 + CFG.INFLATION_PER_MIN) / 60;   // por segundo
-    this.history = [];
+    this.propiedades = [];      // negocios comprados
+    this.rentaAcum = 0;
     this.peakReal = this.realWealth;
   }
 
@@ -2088,8 +2276,21 @@ class Economy {
   get realWealth() { return this.pesos / this.priceIndex + this.usd * CFG.BLUE_BASE; }
   get power() { return this.pesos / this.priceIndex; }
 
+  // Renta total por minuto, en pesos de hoy.
+  get rentaReal() { return this.propiedades.reduce((a, p) => a + p.renta, 0); }
+
+  comprar(negocio) {
+    if (negocio.dueno) return 'ya es tuyo';
+    if (!this.charge(negocio.precio)) return 'sin plata';
+    negocio.dueno = true;
+    this.propiedades.push({ nombre: negocio.nombre, renta: negocio.renta });
+    return 'comprado';
+  }
+
   update(dt) {
     this.priceIndex *= Math.exp(this.rate * dt);
+    // La renta también viene indexada: los negocios ajustan precios.
+    if (this.propiedades.length) this.pay(this.rentaReal * (dt / 60));
     // Camino aleatorio con reversión a la media para el blue.
     this.blueNoise += (this.rng() - 0.5) * CFG.BLUE_VOL * dt * 2 - this.blueNoise * 0.25 * dt;
     this.blueNoise = Math.max(-0.18, Math.min(0.28, this.blueNoise));
@@ -2120,6 +2321,18 @@ class Economy {
     this.pesos += nominal;
     return nominal;
   }
+  guardar() {
+    return { pesos: this.pesos, usd: this.usd, priceIndex: this.priceIndex,
+             propiedades: this.propiedades };
+  }
+  cargar(d) {
+    if (!d) return;
+    this.pesos = d.pesos ?? this.pesos;
+    this.usd = d.usd ?? this.usd;
+    this.priceIndex = d.priceIndex ?? this.priceIndex;
+    this.propiedades = d.propiedades || [];
+  }
+
   charge(realAmount) {
     const nominal = realAmount * this.priceIndex;
     if (this.pesos < nominal) return false;
@@ -2136,6 +2349,8 @@ const TYPES = {
   taller: { color: 0x3aa0ff, label: 'Taller', r: 4.2 },
   laburo: { color: 0xffb020, label: 'Laburo', r: 4.6 },
   armeria:{ color: 0xc0392b, label: 'Armería', r: 3.6 },
+  kiosco: { color: 0xf0e14a, label: 'Kiosco', r: 3.2 },
+  negocio:{ color: 0xb06cff, label: 'Negocio', r: 4.0 },
   meta:   { color: 0xff5470, label: 'Destino', r: 4.0 },
 };
 
@@ -2159,6 +2374,23 @@ class Places {
       this.add('armeria', city.randomBlock(b => b.district === 'once' || b.district === 'boca'));
     this.armeriaCerca = this.add('armeria',
       city.blockAt(city.center.x - 130, city.center.z + 60) || city.randomBlock(b => b.kind === 'edificado'));
+
+    // Kioscos por toda la ciudad: comida, chaleco, y algo para afanar.
+    for (let i = 0; i < 10; i++) this.add('kiosco', city.randomBlock(b => b.kind === 'edificado'));
+    this.add('kiosco', city.blockAt(city.center.x + 130, city.center.z - 40) || city.randomBlock(b => b.kind === 'edificado'));
+
+    // Negocios en venta. Cada uno rinde una renta por minuto, indexada.
+    const rubros = [
+      ['Parrilla', 220000, 5200], ['Kiosco 24hs', 150000, 3600], ['Taller mecánico', 320000, 7400],
+      ['Bar de Palermo', 480000, 10800], ['Playa de estacionamiento', 260000, 6100],
+      ['Cueva de la City', 900000, 21000], ['Remisería', 380000, 8700], ['Cancha de paddle', 300000, 6800],
+    ];
+    this.negocios = [];
+    for (const [nombre, precio, renta] of rubros) {
+      const pl = this.add('negocio', city.randomBlock(b => b.kind === 'edificado'));
+      pl.nombre = nombre; pl.precio = precio; pl.renta = renta; pl.dueno = false;
+      this.negocios.push(pl);
+    }
   }
 
   add(type, block, x, z) {
@@ -2204,57 +2436,76 @@ class Places {
 }
 
 // ===== systems/weapons.js =====
-// Tiro con hitscan: se dispara un rayo desde el pecho hacia donde mira la
-// cámara y se busca el blanco más cercano dentro de un cono angosto, sin
-// atravesar edificios. El trazador y el fogonazo son geometría propia.
-const ALCANCE = 70;
-const CONO = Math.cos(0.045);      // ~2.6 grados de tolerancia
-const PISTOLA = { nombre: 'Pistola', dano: 34, cadencia: 0.26, cargador: 12, precio: 26000, bala: 380 };
+// Arsenal con tiro hitscan. Cada arma define daño, cadencia, dispersión,
+// alcance y cuántos proyectiles salen por disparo: la escopeta tira seis
+// perdigones abiertos, el subfusil uno solo pero muy rápido.
+const ARMAS = {
+  pistola:  { nombre: 'Pistola',  dano: 34, cadencia: 0.26,  cargador: 12, disp: 0.030, alcance: 70, precio: 26000,  bala: 380, perdigones: 1, auto: false },
+  escopeta: { nombre: 'Escopeta', dano: 17, cadencia: 0.85,  cargador: 6,  disp: 0.115, alcance: 26, precio: 78000,  bala: 900, perdigones: 6, auto: false },
+  uzi:      { nombre: 'Subfusil', dano: 18, cadencia: 0.085, cargador: 30, disp: 0.055, alcance: 55, precio: 145000, bala: 520, perdigones: 1, auto: true },
+};
+const ORDEN_ARMAS = ['pistola', 'escopeta', 'uzi'];
 
 class Weapons {
   constructor(scene, game) {
     this.g = game;
-    this.armado = false;
-    this.balas = 0;
-    this.enCargador = 0;
+    this.inv = {};   // arma -> { balas, cargador }
+    this.actual = null;
     this.cool = 0;
-    this.recarga = 0;
 
-    // Trazadores reutilizables: una tira de líneas con vida corta.
     this.trazas = [];
-    const mat = new THREE.LineBasicMaterial({ color: 0xffd489, transparent: true, opacity: 0.9 });
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 20; i++) {
       const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-      const l = new THREE.Line(g, mat.clone());
+      const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xffd489, transparent: true, opacity: 0.9 }));
       l.visible = false; scene.add(l);
       this.trazas.push({ l, t: 0 });
     }
     this.fogonazo = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 6, 5),
+      new THREE.SphereGeometry(0.24, 6, 5),
       new THREE.MeshBasicMaterial({ color: 0xffe6a0, transparent: true, opacity: 0.95, toneMapped: false })
     );
-    this.fogonazo.visible = false;
-    scene.add(this.fogonazo);
+    this.fogonazo.visible = false; scene.add(this.fogonazo);
     this.flashT = 0;
   }
 
-  comprar(economia) {
-    if (!this.armado) {
-      if (!economia.charge(PISTOLA.precio)) return 'sin plata';
-      this.armado = true; this.enCargador = PISTOLA.cargador; this.balas = 12;
+  get spec() { return this.actual ? ARMAS[this.actual] : null; }
+  get armado() { return !!this.actual; }
+  get enCargador() { return this.actual ? this.inv[this.actual].cargador : 0; }
+  get balas() { return this.actual ? this.inv[this.actual].balas : 0; }
+  tiene(k) { return !!this.inv[k]; }
+
+  elegir(k) {
+    if (!this.inv[k]) return false;
+    this.actual = k; this.cool = Math.max(this.cool, 0.2);
+    return true;
+  }
+  siguiente() {
+    const tengo = ORDEN_ARMAS.filter(k => this.inv[k]);
+    if (!tengo.length) return;
+    const i = tengo.indexOf(this.actual);
+    this.elegir(tengo[(i + 1) % tengo.length]);
+  }
+
+  comprar(k, economia) {
+    const s = ARMAS[k];
+    if (!s) return 'no hay';
+    if (!this.inv[k]) {
+      if (!economia.charge(s.precio)) return 'sin plata';
+      this.inv[k] = { balas: s.cargador, cargador: s.cargador };
+      this.actual = k;
       return 'comprada';
     }
-    const faltan = 24;
-    if (!economia.charge(PISTOLA.bala * faltan)) return 'sin plata';
-    this.balas += faltan;
+    const lote = s.cargador * 2;
+    if (!economia.charge(s.bala * lote)) return 'sin plata';
+    this.inv[k].balas += lote;
     return 'municion';
   }
 
+  // Munición total del arma en mano, para el HUD.
   get municionTotal() { return this.enCargador + this.balas; }
 
-  // ¿Choca el segmento contra alguna manzana? Si sí, no hay tiro limpio.
   bloqueado(x0, z0, x1, z1, solidsNear) {
-    const pasos = 14;
+    const pasos = 16;
     for (let i = 1; i <= pasos; i++) {
       const t = i / pasos;
       const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
@@ -2264,61 +2515,68 @@ class Weapons {
     return false;
   }
 
-  disparar(dt) {
+  disparar(dt, mantenido) {
     const g = this.g, p = g.player;
     this.cool = Math.max(0, this.cool - dt);
-    if (!this.armado || this.cool > 0 || p.mode !== 'foot') return null;
-    if (this.enCargador <= 0) {
-      if (this.balas <= 0) return 'sin balas';
-      const carga = Math.min(PISTOLA.cargador, this.balas);
-      this.enCargador = carga; this.balas -= carga; this.cool = 1.1;
+    if (!this.actual || p.mode !== 'foot') return null;
+    const s = this.spec;
+    if (mantenido && !s.auto && this.yaDisparo) return null;
+    if (this.cool > 0) return null;
+
+    const car = this.inv[this.actual];
+    if (car.cargador <= 0) {
+      if (car.balas <= 0) return 'sin balas';
+      const carga = Math.min(s.cargador, car.balas);
+      car.cargador = carga; car.balas -= carga; this.cool = 1.2;
       return 'recargando';
     }
-    this.enCargador--; this.cool = PISTOLA.cadencia;
+    car.cargador--; this.cool = s.cadencia; this.yaDisparo = true;
+    p.yaw = p.camYaw;
 
-    const dx = Math.sin(p.camYaw), dz = Math.cos(p.camYaw);
-    const ox = p.x + dx * 0.4, oz = p.z + dz * 0.4, oy = 1.35;
-    p.yaw = p.camYaw;                       // el personaje encara hacia donde tira
+    const ox = p.x + Math.sin(p.camYaw) * 0.4, oz = p.z + Math.cos(p.camYaw) * 0.4, oy = 1.35;
+    let impacto = null, bajas = 0;
 
-    let mejor = null, mejorD = ALCANCE;
-    const mirar = (tx, tz, obj, tipo) => {
-      const vx = tx - ox, vz = tz - oz;
-      const d = Math.hypot(vx, vz);
-      if (d < 0.8 || d > ALCANCE) return;
-      if ((vx / d) * dx + (vz / d) * dz < CONO) return;
-      if (d < mejorD) { mejorD = d; mejor = { obj, tipo, x: tx, z: tz }; }
-    };
-    for (const ped of g.peds.list)
-      if (ped.active && ped.state !== 'down') mirar(ped.x, ped.z, ped, 'peaton');
-    for (const u of g.police.units)
-      if (u.active) mirar(u.car.x, u.car.z, u, 'cana');
-    for (const t of g.traffic.cars)
-      if (t.active && t !== p.vehicle) mirar(t.car.x, t.car.z, t, 'auto');
+    for (let n = 0; n < s.perdigones; n++) {
+      const ang = p.camYaw + (n === 0 ? 0 : (Math.random() - 0.5) * s.disp * 2);
+      const dx = Math.sin(ang), dz = Math.cos(ang);
+      const cono = Math.cos(s.disp + 0.02);
+      let mejor = null, mejorD = s.alcance;
+      const mirar = (tx, tz, obj, tipo) => {
+        const vx = tx - ox, vz = tz - oz, d = Math.hypot(vx, vz);
+        if (d < 0.8 || d > s.alcance) return;
+        if ((vx / d) * dx + (vz / d) * dz < cono) return;
+        if (d < mejorD) { mejorD = d; mejor = { obj, tipo, x: tx, z: tz }; }
+      };
+      for (const ped of g.peds.list) if (ped.active && ped.state !== 'down') mirar(ped.x, ped.z, ped, 'peaton');
+      for (const u of g.police.units) if (u.active) mirar(u.car.x, u.car.z, u, 'cana');
+      for (const t of g.traffic.cars) if (t.active && t !== p.vehicle) mirar(t.car.x, t.car.z, t, 'auto');
+      if (mejor && this.bloqueado(ox, oz, mejor.x, mejor.z, g.solidsNear)) mejor = null;
 
-    if (mejor && this.bloqueado(ox, oz, mejor.x, mejor.z, g.solidsNear)) mejor = null;
+      const fin = mejor ? mejor : { x: ox + dx * s.alcance, z: oz + dz * s.alcance };
+      this.traza(ox, oy, oz, fin.x, mejor ? 1.1 : 1.5, fin.z);
+      if (!mejor) continue;
+      impacto = impacto || mejor.tipo;
 
-    const fin = mejor ? { x: mejor.x, z: mejor.z } : { x: ox + dx * ALCANCE, z: oz + dz * ALCANCE };
-    this.traza(ox, oy, oz, fin.x, mejor ? 1.1 : 1.4, fin.z);
-    this.fogonazo.position.set(ox + dx * 0.5, oy, oz + dz * 0.5);
+      if (mejor.tipo === 'peaton') {
+        mejor.obj.state = 'down'; mejor.obj.downTime = 0; bajas++;
+      } else if (mejor.tipo === 'cana') {
+        mejor.obj.vida = (mejor.obj.vida ?? 100) - s.dano;
+        if (mejor.obj.vida <= 0) { g.police.retire(mejor.obj); bajas++; g.police.crime('chocarPatrullero', 1.4); }
+        else g.police.crime('chocarPatrullero', 0.16);
+      } else {
+        mejor.obj.car.damage = Math.min(100, mejor.obj.car.damage + s.dano * 0.4);
+        g.traffic.knock(mejor.obj);
+      }
+    }
+
+    if (bajas > 0 && impacto === 'peaton') g.police.crime('atropello', 1.4 * bajas);
+    this.fogonazo.position.set(ox + Math.sin(p.camYaw) * 0.5, oy, oz + Math.cos(p.camYaw) * 0.5);
     this.fogonazo.visible = true; this.flashT = 0.05;
-    g.audio.bang(7);
-
-    if (!mejor) return 'tiro';
-    if (mejor.tipo === 'peaton') {
-      mejor.obj.state = 'down'; mejor.obj.downTime = 0;
-      g.police.crime('atropello', 1.4);
-      return 'peaton';
-    }
-    if (mejor.tipo === 'cana') {
-      mejor.obj.vida = (mejor.obj.vida ?? 100) - PISTOLA.dano;
-      g.police.crime('chocarPatrullero', 0.5);
-      if (mejor.obj.vida <= 0) { g.police.retire(mejor.obj); g.police.crime('chocarPatrullero', 1.2); return 'cana'; }
-      return 'tiro';
-    }
-    mejor.obj.car.damage = Math.min(100, mejor.obj.car.damage + 12);
-    g.traffic.knock(mejor.obj);
-    return 'auto';
+    g.audio.bang(this.actual === 'escopeta' ? 12 : 7);
+    return impacto || 'tiro';
   }
+
+  soltar() { this.yaDisparo = false; }
 
   update(dt) {
     this.flashT -= dt;
@@ -2339,9 +2597,14 @@ class Weapons {
     tr.l.geometry.computeBoundingSphere();
     tr.l.visible = true; tr.t = 0.09;
   }
-}
 
-const ARMA = PISTOLA;
+  guardar() { return { inv: this.inv, actual: this.actual }; }
+  cargar(d) {
+    if (!d || !d.inv) return;
+    this.inv = d.inv;
+    this.actual = d.actual && this.inv[d.actual] ? d.actual : (Object.keys(this.inv)[0] || null);
+  }
+}
 
 // ===== systems/missions.js =====
 // Misiones como máquina de estados. Cada una define arranque, chequeo por
@@ -2670,6 +2933,67 @@ class Police {
   activeCars() { return this.units.filter(u => u.active).map(u => u.car); }
 }
 
+// ===== systems/save.js =====
+// Guardado en el navegador. Se autoguarda cada tanto y al cerrar la pestaña.
+// Todo va envuelto en try/catch: en ventana privada localStorage puede tirar.
+const CLAVE = 'sudestada.v1';
+
+class Save {
+  constructor(game) { this.g = game; this.t = 0; }
+
+  instantanea() {
+    const g = this.g, p = g.player.pos;
+    return {
+      v: 1,
+      economia: g.economy.guardar(),
+      armas: g.weapons.guardar(),
+      salud: g.player.health, chaleco: g.player.armor,
+      x: p.x, z: p.z, hora: g.hour,
+      stats: g.stats,
+      misiones: { hechas: g.missions.done, falladas: g.missions.failed },
+      negocios: g.places.negocios.filter(n => n.dueno).map(n => n.nombre),
+    };
+  }
+
+  guardar() {
+    try { localStorage.setItem(CLAVE, JSON.stringify(this.instantanea())); return true; }
+    catch (_) { return false; }
+  }
+
+  hay() {
+    try { return !!localStorage.getItem(CLAVE); } catch (_) { return false; }
+  }
+
+  cargar() {
+    let d;
+    try { d = JSON.parse(localStorage.getItem(CLAVE) || 'null'); } catch (_) { return false; }
+    if (!d || d.v !== 1) return false;
+    const g = this.g;
+    g.economy.cargar(d.economia);
+    g.weapons.cargar(d.armas);
+    g.player.health = d.salud ?? 100;
+    g.player.armor = d.chaleco ?? 0;
+    g.hour = d.hora ?? g.hour;
+    g.stats = d.stats || g.stats;
+    g.missions.done = d.misiones?.hechas || 0;
+    g.missions.failed = d.misiones?.falladas || 0;
+    for (const n of g.places.negocios)
+      if ((d.negocios || []).includes(n.nombre)) { n.dueno = true; n.mesh.material.color.setHex(0x35d07f); }
+    if (typeof d.x === 'number') {
+      g.player.x = d.x; g.player.z = d.z;
+      g.ownCar.car.x = d.x + 6; g.ownCar.car.z = d.z;
+    }
+    return true;
+  }
+
+  borrar() { try { localStorage.removeItem(CLAVE); } catch (_) {} }
+
+  update(dt) {
+    this.t += dt;
+    if (this.t > 20) { this.t = 0; this.guardar(); }
+  }
+}
+
 // ===== ui/hud.js =====
 const CSS = `
 #hud{position:fixed;inset:0;pointer-events:none;font:500 13px/1.35 ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;color:#f2efe8;text-shadow:0 1px 3px rgba(0,0,0,.85)}
@@ -2699,9 +3023,25 @@ const CSS = `
 #objetivo svg{display:block}
 #objetivo .d{font-variant-numeric:tabular-nums;font-weight:700}
 #objetivo .q{opacity:.6;font-size:12px}
+#salud{position:absolute;bottom:112px;left:14px;width:190px;padding:8px 10px;display:flex;flex-direction:column;gap:5px}
+#salud .fila{display:flex;align-items:center;gap:7px;font-size:11px}
+#salud .fila span{opacity:.6;width:46px}
+#salud .b{flex:1;height:5px;background:rgba(255,255,255,.14);border-radius:3px;overflow:hidden}
+#salud .b i{display:block;height:100%;width:100%}
 #arma{position:absolute;bottom:112px;right:14px;text-align:right;padding:8px 12px;display:none}
 #arma .m{font-size:22px;font-weight:750;font-variant-numeric:tabular-nums}
 #arma .m i{font-style:normal;opacity:.5;font-size:14px}
+#arma .lista{display:flex;gap:5px;justify-content:flex-end;margin-top:5px}
+#arma .lista b{font-weight:600;font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,.10);opacity:.45}
+#arma .lista b.on{opacity:1;background:rgba(255,176,32,.28)}
+#cartel{position:absolute;bottom:150px;left:50%;transform:translateX(-50%);padding:8px 14px;font-size:13px;display:none;white-space:nowrap}
+#renta{display:none}
+#mapa2{position:fixed;inset:0;z-index:40;display:none;place-content:center;background:rgba(6,9,15,.86)}
+#mapa2.on{display:grid}
+#mapa2 .caja{text-align:center}
+#mapa2 canvas{border-radius:12px;border:1px solid rgba(255,255,255,.14);max-width:92vw;max-height:72vh}
+#mapa2 .pie{margin-top:10px;opacity:.65;font-size:12px}
+#mapa2 h2{margin:0 0 10px;font-size:15px;font-weight:700;letter-spacing:.4px}
 #preso{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;padding:14px 22px;display:none}
 #preso b{font-size:18px;letter-spacing:1px}
 #preso .b{height:5px;width:200px;background:rgba(255,255,255,.18);border-radius:3px;margin-top:8px;overflow:hidden}
@@ -2724,6 +3064,7 @@ class Hud {
         <div class="row"><span class="k">Poder adquisitivo</span><span class="v" id="v-poder">$0</span></div>
         <div class="row"><span class="k">Blue</span><span class="v" id="v-blue">$0</span></div>
         <div class="row"><span class="k">Precios</span><span class="v bad" id="v-ipc">+0%</span></div>
+        <div class="row" id="renta"><span class="k">Renta</span><span class="v usd" id="v-renta">$0/min</span></div>
         <div id="infl"><i id="v-inflbar"></i></div>
       </div>
       <div class="panel" id="reloj"><span id="v-hora">00:00</span></div>
@@ -2742,17 +3083,28 @@ class Hud {
         </svg>
         <div><div class="d" id="v-dist">—</div><div class="q" id="v-que">—</div></div>
       </div>
+      <div class="panel" id="salud">
+        <div class="fila"><span>Salud</span><div class="b"><i id="v-salud" style="background:#6fe3a0"></i></div></div>
+        <div class="fila"><span>Chaleco</span><div class="b"><i id="v-chaleco" style="background:#7ab8ff"></i></div></div>
+      </div>
       <div class="panel" id="arma">
         <div class="q" id="v-arma">Pistola</div>
         <div class="m"><span id="v-cargador">0</span><i>/<span id="v-balas">0</span></i></div>
+        <div class="lista" id="v-lista"></div>
       </div>
+      <div class="panel" id="cartel"><span id="v-cartel"></span></div>
+      <div id="mapa2"><div class="caja">
+        <h2>BUENOS AIRES</h2>
+        <canvas id="v-mapagrande" width="740" height="720"></canvas>
+        <div class="pie">Tab cierra · naranja laburo · verde cueva · azul taller · rojo armería · amarillo kiosco · violeta negocio</div>
+      </div></div>
       <div class="panel" id="preso"><b id="v-preso">TE ESTÁN POR AGARRAR</b><div class="b"><i id="v-presobar"></i></div></div>
       <div id="ayuda">
-        <kbd>Mouse</kbd> mirar · <kbd>W A S D</kbd> caminar y manejar<br>
-        <kbd>Espacio</kbd> freno de mano · <kbd>F</kbd> subir / bajar · <kbd>Shift</kbd> correr<br>
-        <kbd>Clic izq</kbd> disparar · <kbd>Rueda</kbd> acercar · <kbd>Q</kbd> <kbd>E</kbd> cámara<br>
-        Naranja = laburo · Verde = cueva · Azul = taller · Rojo = armería<br>
-        Seguí la flecha naranja para agarrar la primera changa.
+        <kbd>Mouse</kbd> mirar · <kbd>W A S D</kbd> caminar y manejar · <kbd>Shift</kbd> correr<br>
+        <kbd>F</kbd> subir / bajar y usar · <kbd>Espacio</kbd> freno de mano · <kbd>Tab</kbd> mapa<br>
+        <kbd>Clic izq</kbd> disparar · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> armas · <kbd>G</kbd> robar · <kbd>B</kbd> chaleco<br>
+        <kbd>M</kbd> cambiar de radio · <kbd>H</kbd> vender dólares · <kbd>Rueda</kbd> acercar<br>
+        Seguí la flecha naranja: te lleva al laburo. Se autoguarda solo.
       </div>`;
     document.body.appendChild(root);
     this.el = (id) => document.getElementById(id);
@@ -2797,12 +3149,31 @@ class Hud {
     this.el('v-dist').textContent = dist > 999 ? (dist / 1000).toFixed(2) + ' km' : Math.round(dist) + ' m';
     this.el('v-que').textContent = oq;
 
+    this.el('v-salud').style.width = Math.max(0, g.player.health) + '%';
+    this.el('v-chaleco').style.width = Math.max(0, g.player.armor) + '%';
+
     const arma = this.el('arma');
     arma.style.display = g.weapons.armado && g.player.mode === 'foot' ? 'block' : 'none';
     if (g.weapons.armado) {
+      this.el('v-arma').textContent = g.weapons.spec.nombre;
       this.el('v-cargador').textContent = g.weapons.enCargador;
       this.el('v-balas').textContent = g.weapons.balas;
+      const tengo = ['pistola', 'escopeta', 'uzi'].filter(k => g.weapons.tiene(k));
+      this.el('v-lista').innerHTML = tengo
+        .map((k, i) => `<b class="${k === g.weapons.actual ? 'on' : ''}">${i + 1}</b>`).join('');
     }
+
+    const renta = this.el('renta');
+    const rr = g.economy.rentaReal;
+    renta.style.display = rr > 0 ? 'flex' : 'none';
+    if (rr > 0) this.el('v-renta').textContent = pesos(rr * g.economy.priceIndex) + '/min';
+
+    const cartel = this.el('cartel');
+    cartel.style.display = g.cartel ? 'block' : 'none';
+    if (g.cartel) this.el('v-cartel').textContent = g.cartel;
+
+    this.el('mapa2').classList.toggle('on', !!g.mapaAbierto);
+    if (g.mapaAbierto) this.drawBigMap(g);
 
     const preso = this.el('preso');
     const pb = g.police.busted;
@@ -2856,6 +3227,18 @@ class Hud {
       c.lineWidth = e.big ? 3 : 1.4;
       c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
     }
+    // ruta del GPS sobre las calles
+    if (g.gps && g.gps.ruta && g.gps.ruta.length > 1) {
+      c.strokeStyle = '#ffb020'; c.lineWidth = 2.6; c.lineJoin = 'round';
+      c.beginPath();
+      const a0 = tf(g.gps.ruta[0].x, g.gps.ruta[0].z);
+      c.moveTo(a0[0], a0[1]);
+      for (let i = 1; i < g.gps.ruta.length; i++) {
+        const q = tf(g.gps.ruta[i].x, g.gps.ruta[i].z);
+        c.lineTo(q[0], q[1]);
+      }
+      c.stroke();
+    }
     // marcadores
     for (const pl of g.places.list) {
       if (!pl.mesh.visible) continue;
@@ -2878,6 +3261,53 @@ class Hud {
     c.closePath(); c.fill();
     c.strokeStyle = 'rgba(255,255,255,.18)'; c.lineWidth = 1;
     c.beginPath(); c.arc(R, R, R - 1, 0, Math.PI * 2); c.stroke();
+  }
+
+  // Mapa completo de la ciudad, con todo lo que hay para hacer.
+  drawBigMap(g) {
+    const cv = this.el('v-mapagrande'), c = cv.getContext('2d');
+    const W = cv.width, H = cv.height, m = 16;
+    const k = Math.min((W - m * 2) / g.city.width, (H - m * 2) / g.city.depth);
+    const tf = (x, z) => [m + x * k, m + z * k];
+    c.fillStyle = '#0f1116'; c.fillRect(0, 0, W, H);
+
+    for (const b of g.city.blocks) {
+      const [x0, y0] = tf(b.x0, b.z0), [x1, y1] = tf(b.x1, b.z1);
+      c.fillStyle = (b.kind === 'parque' || b.kind === 'cancha') ? '#22331d'
+        : b.district === 'microcentro' ? '#2f3540' : '#242830';
+      c.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    for (const e of g.roads.edges) {
+      if (!e.big) continue;
+      const A = g.roads.nodes[e.a], B = g.roads.nodes[e.b];
+      const a = tf(A.x, A.z), b = tf(B.x, B.z);
+      c.strokeStyle = g.roads.isBlocked(e) ? '#c0392b' : (e.width >= 100 ? '#525b6b' : '#39404d');
+      c.lineWidth = e.width >= 100 ? 4 : 2;
+      c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    }
+    if (g.gps && g.gps.ruta && g.gps.ruta.length > 1) {
+      c.strokeStyle = '#ffb020'; c.lineWidth = 3; c.beginPath();
+      const a0 = tf(g.gps.ruta[0].x, g.gps.ruta[0].z); c.moveTo(a0[0], a0[1]);
+      for (let i = 1; i < g.gps.ruta.length; i++) { const q = tf(g.gps.ruta[i].x, g.gps.ruta[i].z); c.lineTo(q[0], q[1]); }
+      c.stroke();
+    }
+    for (const pl of g.places.list) {
+      if (!pl.mesh.visible) continue;
+      const [x, y] = tf(pl.x, pl.z);
+      c.fillStyle = pl.dueno ? '#35d07f' : '#' + pl.color.toString(16).padStart(6, '0');
+      c.beginPath(); c.arc(x, y, 4.2, 0, Math.PI * 2); c.fill();
+    }
+    c.fillStyle = '#ff4a3d';
+    for (const u of g.police.units) {
+      if (!u.active) continue;
+      const [x, y] = tf(u.car.x, u.car.z);
+      c.beginPath(); c.arc(x, y, 3.2, 0, Math.PI * 2); c.fill();
+    }
+    const p = g.player.pos, pt = tf(p.x, p.z);
+    c.save(); c.translate(pt[0], pt[1]); c.rotate(g.player.camYaw);
+    c.fillStyle = '#fff';
+    c.beginPath(); c.moveTo(0, -8); c.lineTo(-5.5, 6); c.lineTo(5.5, 6); c.closePath(); c.fill();
+    c.restore();
   }
 }
 
@@ -2938,11 +3368,16 @@ class Game {
     this.weapons = new Weapons(this.scene, this);
     this.missions = new Missions(this);
     this.hud = new Hud();
+    this.save = new Save(this);
+    this.gps = { ruta: null, t: 0 };
+    this.mapaAbierto = false;
 
     this.hour = CFG.START_HOUR;
+    if (this.save.cargar()) this.missions.say('Partida cargada. Se autoguarda sola.', 4);
+    addEventListener('beforeunload', () => this.save.guardar());
     this.piquete = { edge: null, t: 26, mesh: null };
     this.tmpCars = [];
-    this.stats = { fps: 60, acc: 0, frames: 0 };
+    this.stats = { robos: 0, misiones: 0 };
 
     addEventListener('resize', () => this.onResize());
     const kick = () => { this.audio.start(); removeEventListener('pointerdown', kick); removeEventListener('keydown', kick); };
@@ -3131,10 +3566,16 @@ class Game {
     if (!best) return;
 
     if (best.kind === 'traffic') {
+      // Si estaba andando, adentro había alguien: sale disparado a la vereda.
+      const conductor = best.obj.mode === 'lane' && best.car.speed > 0.4;
       best.obj.mode = 'own';
       best.obj.active = true;
-      this.police.crime('robo');
-      this.missions.say(`Te llevaste un ${best.car.spec.name}.`, 2.2);
+      this.police.crime('robo', conductor ? 1.35 : 1);
+      if (conductor) {
+        const r = best.car.right();
+        this.peds.expulsar(best.car.x + r.x * 2.2, best.car.z + r.z * 2.2);
+        this.missions.say(`Bajaste al chofer y te llevaste el ${best.car.spec.name}.`, 3);
+      } else this.missions.say(`Te llevaste un ${best.car.spec.name}.`, 2.2);
     } else if (best.kind === 'police') {
       this.police.crime('robo', 2);
       this.police.retire(best.obj);
@@ -3143,50 +3584,114 @@ class Game {
     this.player.enter(best.obj, best.car);
   }
 
+  // Un solo lugar decide qué ofrece el punto en el que estás parado. El texto
+  // del cartel sale de acá, así que nunca dice una cosa y hace otra.
   interactPlaces() {
     const p = this.player.pos;
+    const usar = this.input.hit('use');
+    const aPie = this.player.mode === 'foot';
+    let cartel = null;
+
     const cueva = this.places.near(p.x, p.z, 'cueva');
     if (cueva) {
-      if (this.input.hit('use')) {
+      cartel = `Cueva · F comprar dólares a ${pesos(this.economy.blue * 1.025)} · H vender`;
+      if (usar) {
         const got = this.economy.buyUsd(this.economy.pesos);
-        if (got > 0) this.missions.say(`Compraste US$${got.toFixed(0)} a ${pesos(this.economy.blue * 1.025)}.`, 3);
+        if (got > 0) this.missions.say(`Compraste US$${got.toFixed(0)}.`, 3);
+        else this.missions.say('No tenés pesos para cambiar.', 2);
       }
       if (this.input.hit('horn')) {
         const got = this.economy.sellUsd(this.economy.usd);
         if (got > 0) this.missions.say(`Vendiste y te llevaste ${pesos(got)}.`, 3);
       }
-      if (!this.cuevaHint) { this.missions.say('Cueva: F para comprar dólares, H para vender.', 2.5); this.cuevaHint = true; }
-    } else this.cuevaHint = false;
+    }
 
     const arm = this.places.near(p.x, p.z, 'armeria');
-    if (arm && this.player.mode === 'foot') {
-      if (this.input.hit('use')) {
-        const r = this.weapons.comprar(this.economy);
-        if (r === 'comprada') this.missions.say('Pistola comprada. Clic izquierdo para tirar.', 4);
-        else if (r === 'municion') this.missions.say('Cargaste 24 balas.', 2.5);
+    if (arm && aPie) {
+      const k = this.compraArma();
+      const s = ARMAS[k];
+      const precio = this.weapons.tiene(k) ? s.bala * s.cargador * 2 : s.precio;
+      cartel = `Armería · F: ${this.weapons.tiene(k) ? 'munición de ' + s.nombre : s.nombre} (${pesos(precio * this.economy.priceIndex)})`
+             + (this.weapons.armado ? ' · G robar' : '');
+      if (usar) {
+        const r = this.weapons.comprar(k, this.economy);
+        if (r === 'comprada') this.missions.say(`${s.nombre} comprada. Teclas 1-3 para cambiar de arma.`, 4);
+        else if (r === 'municion') this.missions.say(`Cargaste munición de ${s.nombre}.`, 2.5);
         else this.missions.say('No te alcanza.', 2.5);
-      } else if (!this.armHint) {
-        this.armHint = true;
-        this.missions.say(this.weapons.armado
-          ? `Armería: F para comprar 24 balas (${pesos(ARMA.bala * 24 * this.economy.priceIndex)}).`
-          : `Armería: F para comprar la pistola (${pesos(ARMA.precio * this.economy.priceIndex)}).`, 3.5);
       }
-    } else this.armHint = false;
+      if (this.input.hit('robar')) this.robar(arm, 90000, 2.4);
+    }
+
+    const kio = this.places.near(p.x, p.z, 'kiosco');
+    if (kio && aPie) {
+      cartel = `Kiosco · F comer (${pesos(6000 * this.economy.priceIndex)}) · B chaleco (${pesos(34000 * this.economy.priceIndex)})`
+             + (this.weapons.armado ? ' · G robar' : '');
+      if (usar) {
+        if (this.player.health > 96) this.missions.say('Estás entero, no hace falta.', 2);
+        else if (this.economy.charge(6000)) {
+          this.player.health = Math.min(100, this.player.health + 35);
+          this.missions.say('Comiste algo. Recuperaste salud.', 2.5);
+        } else this.missions.say('No te alcanza ni para un alfajor.', 2.5);
+      }
+      if (this.input.hit('chaleco')) {
+        if (this.player.armor > 96) this.missions.say('Ya tenés el chaleco puesto.', 2);
+        else if (this.economy.charge(34000)) {
+          this.player.armor = 100;
+          this.missions.say('Chaleco puesto. Aguanta el primer cargador.', 3);
+        } else this.missions.say('No te alcanza para el chaleco.', 2.5);
+      }
+      if (this.input.hit('robar')) this.robar(kio, 26000, 1.6);
+    }
+
+    const neg = this.places.near(p.x, p.z, 'negocio');
+    if (neg) {
+      cartel = neg.dueno
+        ? `${neg.nombre} · tuyo · rinde ${pesos(neg.renta * this.economy.priceIndex)} por minuto`
+        : `${neg.nombre} en venta · F comprar (${pesos(neg.precio * this.economy.priceIndex)}) · rinde ${pesos(neg.renta * this.economy.priceIndex)}/min`;
+      if (usar && !neg.dueno) {
+        const r = this.economy.comprar(neg);
+        if (r === 'comprado') {
+          neg.mesh.material.color.setHex(0x35d07f);
+          this.missions.say(`Compraste ${neg.nombre}. Ahora te entra plata sola.`, 4.5);
+        } else this.missions.say('No te alcanza para ese negocio.', 3);
+      }
+    }
 
     const taller = this.places.near(p.x, p.z, 'taller');
     if (taller && this.player.mode === 'drive' && this.player.car.speed < 6) {
-      if (this.tallerCool > 0) return;
-      const cost = 15000;
-      if (this.economy.charge(cost)) {
-        this.player.car.damage = 0;
-        const had = this.police.wanted();
-        this.police.clear();
-        this.tallerCool = 4;
-        this.missions.say(had ? 'Chapa, pintura y a otra cosa. Se te fue la cana.' : 'Quedó como nuevo.', 3.5);
-      } else if (!this.tallerWarn) {
-        this.missions.say('No te alcanza para el taller.', 2.5); this.tallerWarn = true;
+      cartel = 'Taller · chapa, pintura y te sacan la cana de encima';
+      if (this.tallerCool <= 0) {
+        if (this.economy.charge(15000)) {
+          this.player.car.damage = 0;
+          const had = this.police.wanted();
+          this.police.clear();
+          this.tallerCool = 4;
+          this.missions.say(had ? 'Chapa, pintura y a otra cosa. Se te fue la cana.' : 'Quedó como nuevo.', 3.5);
+        } else if (!this.tallerWarn) {
+          this.missions.say('No te alcanza para el taller.', 2.5); this.tallerWarn = true;
+        }
       }
     } else this.tallerWarn = false;
+
+    this.cartel = cartel;
+  }
+
+  // Qué arma te vende la armería: la siguiente que no tengas.
+  compraArma() {
+    for (const k of ORDEN_ARMAS) if (!this.weapons.tiene(k)) return k;
+    return this.weapons.actual || 'pistola';
+  }
+
+  // Atraco a mano armada: plata en el acto y la cana encima.
+  robar(lugar, montoReal, estrellas) {
+    if (!this.weapons.armado) { this.missions.say('Para robar hace falta un fierro.', 2.5); return; }
+    if (lugar.robadoT > 0) { this.missions.say('Acá ya cobraste. Volvé más tarde.', 2.5); return; }
+    const botin = this.economy.pay(montoReal * this.rng.range(0.7, 1.35));
+    lugar.robadoT = 150;
+    this.police.heat = Math.max(this.police.heat, estrellas);
+    this.missions.say(`Te llevaste ${pesos(botin)}. Salí de acá.`, 4);
+    this.audio.bang(6);
+    this.stats.robos = (this.stats.robos || 0) + 1;
   }
 
   bustedOrDead() {
@@ -3201,7 +3706,7 @@ class Game {
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
     if (this.player.health <= 0) {
-      this.player.health = 100;
+      this.player.health = 100; this.player.armor = 0;
       const fine = this.economy.pesos * 0.20;
       this.economy.pesos -= fine;
       this.police.clear();
@@ -3209,6 +3714,27 @@ class Game {
       this.missions.say('Zafaste de milagro. La cuenta del hospital no.', 5);
       if (this.missions.current) { this.missions.failed++; this.missions.finish(); }
     }
+  }
+
+  // Ruta por calles hasta el objetivo, recalculada de a poco. Reusa el mismo
+  // A* que usa la policía, así que el GPS te manda por donde se puede ir de
+  // verdad: esquiva los piquetes.
+  actualizarGps(dt) {
+    this.gps.t -= dt;
+    if (this.gps.t > 0) return;
+    this.gps.t = 1.5;
+    const obj = this.objetivo();
+    if (!obj) { this.gps.ruta = null; return; }
+    const p = this.player.pos;
+    const desde = this.roads.nodeNear(p.x, p.z);
+    const hasta = this.roads.nodeNear(obj.x, obj.z);
+    const ruta = this.roads.path(desde, hasta);
+    this.gps.ruta = ruta ? ruta.map(id => this.roads.nodes[id]) : null;
+  }
+
+  objetivo() {
+    if (this.missions.current && this.meta.mesh.visible) return this.meta;
+    return this.places.laburo;
   }
 
   respawn() {
@@ -3224,6 +3750,12 @@ class Game {
 
   update(dt) {
     const input = this.input;
+    if (input.hit('mapa')) this.mapaAbierto = !this.mapaAbierto;
+    if (this.mapaAbierto) {
+      // Con el mapa abierto el mundo se congela, como corresponde.
+      this.hud.update(this); input.endFrame();
+      return;
+    }
     if (input.hit('use')) this.pendingUse = true;
 
     this.economy.update(dt);
@@ -3324,24 +3856,35 @@ class Game {
     }
     this.peds.runOver(pc ? cars.filter(c => c !== pc) : cars);
 
-    // Disparar y resolver los tiros de la policía.
+    // Cambio de arma y disparo.
+    if (input.hit('arma1')) this.weapons.elegir('pistola');
+    if (input.hit('arma2')) this.weapons.elegir('escopeta');
+    if (input.hit('arma3')) this.weapons.elegir('uzi');
+    if (input.hit('recargar')) this.weapons.siguiente();
+    if (input.hit('radio') && this.audio.radio)
+      this.missions.say('Radio: ' + this.audio.radio.cambiar(), 3);
+
     if (input.is('fire')) {
-      const r = this.weapons.disparar(dt);
+      const r = this.weapons.disparar(dt, !input.hit('fire'));
       if (r === 'sin balas' && !this.avisoBalas) {
-        this.avisoBalas = true; this.missions.say('Sin balas. Comprá en la armería (círculo rojo).', 3);
+        this.avisoBalas = true; this.missions.say('Sin balas. Comprá munición en la armería.', 3);
       }
       if (r && r !== 'sin balas') this.avisoBalas = false;
-      if (r === 'peaton') this.missions.say('Le disparaste a alguien.', 2);
-    } else this.weapons.cool = Math.max(0, this.weapons.cool - dt);
+    } else { this.weapons.soltar(); this.weapons.cool = Math.max(0, this.weapons.cool - dt); }
     this.weapons.update(dt);
 
     for (const t of this.police.disparos) {
       if (this.weapons.bloqueado(t.x, t.z, t.tx, t.tz, this.solidsNear)) continue;
-      this.player.health -= t.dano;
+      this.player.danar(t.dano);
       this.player.shake = Math.max(this.player.shake, 0.35);
       this.audio.bang(5);
     }
 
+    // Los negocios robados se enfrían solos.
+    for (const pl of this.places.list) if (pl.robadoT > 0) pl.robadoT -= dt;
+
+    this.actualizarGps(dt);
+    this.save.update(dt);
     this.missions.update(dt);
     this.bustedOrDead();
     this.player.updateCamera(this.camera, dt, input);

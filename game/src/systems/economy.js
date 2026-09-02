@@ -15,7 +15,8 @@ export class Economy {
     this.priceIndex = 1;
     this.blueNoise = 0;
     this.rate = Math.log(1 + CFG.INFLATION_PER_MIN) / 60;   // por segundo
-    this.history = [];
+    this.propiedades = [];      // negocios comprados
+    this.rentaAcum = 0;
     this.peakReal = this.realWealth;
   }
 
@@ -26,8 +27,21 @@ export class Economy {
   get realWealth() { return this.pesos / this.priceIndex + this.usd * CFG.BLUE_BASE; }
   get power() { return this.pesos / this.priceIndex; }
 
+  // Renta total por minuto, en pesos de hoy.
+  get rentaReal() { return this.propiedades.reduce((a, p) => a + p.renta, 0); }
+
+  comprar(negocio) {
+    if (negocio.dueno) return 'ya es tuyo';
+    if (!this.charge(negocio.precio)) return 'sin plata';
+    negocio.dueno = true;
+    this.propiedades.push({ nombre: negocio.nombre, renta: negocio.renta });
+    return 'comprado';
+  }
+
   update(dt) {
     this.priceIndex *= Math.exp(this.rate * dt);
+    // La renta también viene indexada: los negocios ajustan precios.
+    if (this.propiedades.length) this.pay(this.rentaReal * (dt / 60));
     // Camino aleatorio con reversión a la media para el blue.
     this.blueNoise += (this.rng() - 0.5) * CFG.BLUE_VOL * dt * 2 - this.blueNoise * 0.25 * dt;
     this.blueNoise = Math.max(-0.18, Math.min(0.28, this.blueNoise));
@@ -58,6 +72,18 @@ export class Economy {
     this.pesos += nominal;
     return nominal;
   }
+  guardar() {
+    return { pesos: this.pesos, usd: this.usd, priceIndex: this.priceIndex,
+             propiedades: this.propiedades };
+  }
+  cargar(d) {
+    if (!d) return;
+    this.pesos = d.pesos ?? this.pesos;
+    this.usd = d.usd ?? this.usd;
+    this.priceIndex = d.priceIndex ?? this.priceIndex;
+    this.propiedades = d.propiedades || [];
+  }
+
   charge(realAmount) {
     const nominal = realAmount * this.priceIndex;
     if (this.pesos < nominal) return false;

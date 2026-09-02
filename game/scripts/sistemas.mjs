@@ -209,10 +209,17 @@ console.log('\n=== ARMAS Y ARRESTO ===');
   falso.weapons = w;
 
   eco.pesos = 5000;
-  ok(w.comprar(eco) === 'sin plata', 'sin guita no te venden el fierro');
+  ok(w.comprar('pistola', eco) === 'sin plata', 'sin guita no te venden el fierro');
   eco.pesos = 200000;
-  ok(w.comprar(eco) === 'comprada', 'con guita comprás la pistola');
+  ok(w.comprar('pistola', eco) === 'comprada', 'con guita comprás la pistola');
   ok(w.municionTotal > 0, 'la pistola viene con balas', `${w.municionTotal}`);
+  ok(w.actual === 'pistola', 'queda empuñada la que compraste');
+
+  // La escopeta abre varios perdigones; el subfusil es automático.
+  eco.pesos = 900000;
+  ok(w.comprar('escopeta', eco) === 'comprada', 'también se compra la escopeta');
+  ok(w.tiene('escopeta') && w.tiene('pistola'), 'el arsenal acumula, no reemplaza');
+  w.elegir('pistola');
 
   // Un peatón justo enfrente, mirando a +Z.
   jug.camYaw = 0; jug.mode = 'foot'; jug.x = 500; jug.z = 500;
@@ -222,7 +229,7 @@ console.log('\n=== ARMAS Y ARRESTO ===');
 
   const antesHeat = pol.heat, antesBalas = w.enCargador;
   w.cool = 0;
-  const r = w.disparar(DT);
+  const r = w.disparar(DT, false);
   ok(r === 'peaton', 'el tiro le pega al peatón que tenés enfrente', `resultado: ${r}`);
   ok(victima.state === 'down', 'el peatón cae');
   ok(w.enCargador === antesBalas - 1, 'gasta una bala por tiro');
@@ -233,8 +240,8 @@ console.log('\n=== ARMAS Y ARRESTO ===');
   const victima2 = peds.list[1];
   victima2.active = true; victima2.state = 'walk'; victima2.x = 500; victima2.z = 515;
   falso.solidsNear = () => [{ x0: 495, x1: 505, z0: 505, z1: 510 }];
-  w.cool = 0;
-  const r2 = w.disparar(DT);
+  w.cool = 0; w.soltar();
+  const r2 = w.disparar(DT, false);
   ok(r2 === 'tiro' && victima2.state !== 'down', 'no se dispara a través de un edificio');
   falso.solidsNear = () => [];
 
@@ -242,8 +249,8 @@ console.log('\n=== ARMAS Y ARRESTO ===');
   victima2.active = false;          // saco al anterior de la línea de fuego
   const victima3 = peds.list[2];
   victima3.active = true; victima3.state = 'walk'; victima3.x = 512; victima3.z = 500;
-  w.cool = 0;
-  ok(w.disparar(DT) === 'tiro' && victima3.state !== 'down', 'no le pega a quien no estás apuntando');
+  w.cool = 0; w.soltar();
+  ok(w.disparar(DT, false) === 'tiro' && victima3.state !== 'down', 'no le pega a quien no estás apuntando');
 
   // Quedarse quieto con la cana encima, en auto, tiene que terminar en arresto.
   pol.clear(); pol.heat = 3;
@@ -256,6 +263,40 @@ console.log('\n=== ARMAS Y ARRESTO ===');
   }
   ok(pol.busted > 2.2, 'parado con el patrullero encima te terminan agarrando',
      `contador ${pol.busted.toFixed(2)}s`);
+}
+
+console.log('\n=== PROPIEDADES Y GUARDADO ===');
+{
+  const eco = new Economy(makeRng(12));
+  eco.pesos = 1200000;
+  const neg = { nombre: 'Parrilla', precio: 220000, renta: 5200, dueno: false };
+  ok(eco.comprar(neg) === 'comprado', 'comprás un negocio');
+  ok(eco.comprar(neg) === 'ya es tuyo', 'no lo podés comprar dos veces');
+  ok(eco.rentaReal === 5200, 'la renta suma en pesos de hoy');
+
+  // Con renta la plata baja más lento que sin renta: no la gana, la frena.
+  const conRenta = new Economy(makeRng(12)); conRenta.pesos = 1000000;
+  conRenta.comprar({ nombre: 'x', precio: 1, renta: 9000, dueno: false });
+  const sinRenta = new Economy(makeRng(12)); sinRenta.pesos = 1000000;
+  for (let i = 0; i < 60 * 120; i++) { conRenta.update(DT); sinRenta.update(DT); }
+  ok(conRenta.power > sinRenta.power, 'la renta frena el derretimiento',
+     `${Math.round(sinRenta.power)} sin renta vs ${Math.round(conRenta.power)} con renta`);
+
+  const e2 = new Economy(makeRng(1));
+  e2.pesos = 777; e2.usd = 12; e2.propiedades = [{ nombre: 'Bar', renta: 100 }];
+  const e3 = new Economy(makeRng(1));
+  e3.cargar(e2.guardar());
+  ok(e3.pesos === 777 && e3.usd === 12 && e3.rentaReal === 100,
+     'la economía sobrevive a guardar y cargar');
+
+  const wa = new Weapons(scene, { player: {}, peds: { list: [] }, police: { units: [] },
+    traffic: { cars: [] }, audio: { bang() {} }, solidsNear: () => [] });
+  const eco2 = new Economy(makeRng(2)); eco2.pesos = 900000;
+  wa.comprar('pistola', eco2); wa.comprar('uzi', eco2);
+  const wb = new Weapons(scene, { player: {} });
+  wb.cargar(wa.guardar());
+  ok(wb.tiene('pistola') && wb.tiene('uzi') && wb.actual === wa.actual,
+     'el arsenal sobrevive a guardar y cargar');
 }
 
 console.log('\n=== GRAFO DE CALLES ===');
