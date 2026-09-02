@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Trazada</title>
+<style>
+  html,body{margin:0;height:100%;background:#0e1218;overflow:hidden;
+    font:500 14px/1.4 ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;color:#eef1f5}
+  canvas{display:block}
+  #splash{position:fixed;inset:0;z-index:50;display:grid;place-content:center;text-align:center;gap:14px;
+    background:radial-gradient(ellipse at 50% 38%,#1d2a3a,#080b10 72%);transition:opacity .6s}
+  #splash.listo{opacity:0;pointer-events:none}
+  #splash h1{margin:0;font-size:58px;font-weight:800;letter-spacing:-2.5px;
+    background:linear-gradient(180deg,#ffd88a,#e0913a);-webkit-background-clip:text;background-clip:text;color:transparent}
+  #splash p{margin:0;opacity:.62;max-width:440px;padding:0 20px}
+  .barra{width:280px;height:3px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;margin:0 auto}
+  .barra i{display:block;height:100%;width:35%;background:#ffc447;animation:l 1.1s ease-in-out infinite}
+  @keyframes l{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head><body>
+  <div id="splash">
+    <h1>TRAZADA</h1>
+    <p>Simulador de circuito con física de neumático real. Andá con volante o con teclado.</p>
+    <div class="barra"><i></i></div>
+    <div id="carga">Arrancando…</div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body></html>

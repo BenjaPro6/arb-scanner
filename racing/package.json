@@ -1,0 +1,14 @@
+{
+  "name": "trazada",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Simulador de circuito para volante, con neumático Pacejka y física a 400 Hz.",
+  "scripts": {
+    "start": "python3 -m http.server 8124 --bind 127.0.0.1",
+    "test": "node scripts/sim.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "vendor": "node scripts/vendor.mjs"
+  },
+  "devDependencies": { "three": "0.160.0" }
+}

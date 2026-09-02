@@ -1,0 +1,1363 @@
+<title>Trazada</title>
+<style>
+  html,body{margin:0;height:100%;background:#0e1218;overflow:hidden;
+    font:500 14px/1.4 ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;color:#eef1f5}
+  canvas{display:block}
+  #splash{position:fixed;inset:0;z-index:50;display:grid;place-content:center;text-align:center;gap:14px;
+    background:radial-gradient(ellipse at 50% 38%,#1d2a3a,#080b10 72%);transition:opacity .6s}
+  #splash.listo{opacity:0;pointer-events:none}
+  #splash h1{margin:0;font-size:clamp(36px,8vw,62px);font-weight:800;letter-spacing:-2.5px;
+    background:linear-gradient(180deg,#ffd88a,#e0913a);-webkit-background-clip:text;background-clip:text;color:transparent}
+  #splash p{margin:0;opacity:.62;max-width:450px;padding:0 20px}
+  .barra{width:280px;height:3px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;margin:0 auto}
+  .barra i{display:block;height:100%;width:35%;background:#ffc447;animation:l 1.1s ease-in-out infinite}
+  @keyframes l{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
+  #foco{position:fixed;inset:0;z-index:60;display:grid;place-content:center;text-align:center;gap:10px;
+    background:rgba(6,9,15,.72);cursor:pointer;transition:opacity .3s}
+  #foco.oculto{opacity:0;pointer-events:none}
+  #foco b{font-size:22px;font-weight:750}
+  #foco span{opacity:.62;font-size:13px;max-width:430px;padding:0 20px}
+</style>
+
+<div id="splash">
+  <h1>TRAZADA</h1>
+  <p>Simulador de circuito con física de neumático real. Volante o teclado.</p>
+  <div class="barra"><i></i></div>
+  <div id="carga">Arrancando…</div>
+</div>
+<div id="foco" class="oculto">
+  <b>Hacé clic para manejar</b>
+  <span>W A S D con teclado. Si tenés volante conectado, apretá <b>C</b> y movelo de tope a tope y pisá los pedales para calibrarlo.</span>
+</div>
+
+<script type="module">
+let THREE;
+try { THREE = await import('https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js'); }
+catch (e) { THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js'); }
+
+// ===== core/utils.js =====
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, t, dt) => a + (b - a) * (1 - Math.pow(1 - t, dt * 60));
+const TAU = Math.PI * 2;
+
+// Diferencia angular más corta, en (-PI, PI].
+function angDelta(from, to) {
+  let d = (to - from) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d <= -Math.PI) d += TAU;
+  return d;
+}
+
+function approach(cur, target, rate, dt) {
+  const d = target - cur;
+  const step = rate * dt;
+  return Math.abs(d) <= step ? target : cur + Math.sign(d) * step;
+}
+
+// Formato de guita al estilo argentino: $1.234.567
+function pesos(n) {
+  const s = Math.round(Math.abs(n)).toString();
+  return (n < 0 ? '-$' : '$') + s.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+// Hash espacial simple para consultas de vecindad O(1).
+class SpatialHash {
+  constructor(cell = 40) { this.cell = cell; this.map = new Map(); }
+  key(x, z) { return ((x / this.cell) | 0) * 73856093 ^ ((z / this.cell) | 0) * 19349663; }
+  clear() { this.map.clear(); }
+  insert(x, z, item) {
+    const k = this.key(x, z);
+    let b = this.map.get(k);
+    if (!b) { b = []; this.map.set(k, b); }
+    b.push(item);
+  }
+  query(x, z, r, out = []) {
+    out.length = 0;
+    const c = this.cell, n = Math.ceil(r / c);
+    for (let dx = -n; dx <= n; dx++) for (let dz = -n; dz <= n; dz++) {
+      const b = this.map.get(this.key(x + dx * c, z + dz * c));
+      if (b) for (const it of b) out.push(it);
+    }
+    return out;
+  }
+}
+
+// ===== core/rng.js =====
+// PRNG determinista (mulberry32). Misma semilla => misma ciudad, siempre.
+function makeRng(seed) {
+  let a = seed >>> 0;
+  const r = () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  r.range = (lo, hi) => lo + r() * (hi - lo);
+  r.int = (lo, hi) => Math.floor(r.range(lo, hi + 1));
+  r.pick = (arr) => arr[Math.floor(r() * arr.length)];
+  r.chance = (p) => r() < p;
+  return r;
+}
+
+// ===== core/meshbuilder.js =====
+// Constructor de geometría cruda. Escribo los vértices a mano en vez de
+// mergear BoxGeometry porque necesito control exacto de las UV: los ventanales
+// tienen que medir siempre lo mismo en metros, sin importar el tamaño del edificio.
+class MeshBuilder {
+  constructor() { this.pos = []; this.nor = []; this.uv = []; }
+
+  get count() { return this.pos.length / 3; }
+
+  quad(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, u, v) {
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = dx - ax, e2y = dy - ay, e2z = dz - az;
+    let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    const P = this.pos, N = this.nor, U = this.uv;
+    const push = (x, y, z, s, t) => { P.push(x, y, z); N.push(nx, ny, nz); U.push(s, t); };
+    push(ax, ay, az, 0, 0); push(bx, by, bz, u, 0); push(cx, cy, cz, u, v);
+    push(ax, ay, az, 0, 0); push(cx, cy, cz, u, v); push(dx, dy, dz, 0, v);
+  }
+
+  // Caja apoyada en y0, con UV en "unidades de textura" reales (metros / escala).
+  box(x0, z0, x1, z1, y0, y1, us, vs, capUs = us) {
+    const w = x1 - x0, d = z1 - z0, h = y1 - y0;
+    const uw = w / us, ud = d / us, vh = h / vs;
+    // Cuatro caras laterales, cada una con la normal apuntando hacia AFUERA.
+    // norte (-z)
+    this.quad(x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, uw, vh);
+    // sur (+z)
+    this.quad(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, uw, vh);
+    // oeste (-x)
+    this.quad(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, ud, vh);
+    // este (+x)
+    this.quad(x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, ud, vh);
+    // techo
+    this.quad(x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, w / capUs, d / capUs);
+  }
+
+  // Losa horizontal (vereda, plaza, cancha).
+  slab(x0, z0, x1, z1, y, us = 8) {
+    this.quad(x0, y, z1, x1, y, z1, x1, y, z0, x0, y, z0, (x1 - x0) / us, (z1 - z0) / us);
+  }
+
+  toGeometry() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+// ===== sim/tire.js =====
+// Modelo de neumático tipo Pacejka (fórmula mágica). La diferencia con el
+// modelo lineal del GTA es que ESTE TIENE PICO: la fuerza crece con la deriva
+// hasta un máximo y después CAE. Ese pico y esa caída son exactamente lo que
+// sentís en las manos cuando el auto se te va, y lo que un volante con force
+// feedback tiene que transmitir. Sin esto, un juego de volante no existe.
+//
+//   F = D · sin( C · atan( B·s − E·(B·s − atan(B·s)) ) )
+//
+// D es el pico (μ·Fz), C la forma, B la rigidez y E la asimetría de la caída.
+
+// B, C y E resueltos para que el pico caiga donde cae en un neumático real.
+// Ojo: los coeficientes que se publican suelen estar en GRADOS; acá todo va en
+// radianes, y confundirlo deja la curva sin pico (sube y nunca cae).
+const LATERAL = { B: 10.14, C: 1.9, E: 0.6, pico: 0.1309 };    // pico a 7,5° de deriva
+const LONGITUDINAL = { B: 15.96, C: 1.65, E: 0.5, pico: 0.11 }; // pico a 11% de deslizamiento
+
+function magica(s, p) {
+  const bs = p.B * s;
+  return Math.sin(p.C * Math.atan(bs - p.E * (bs - Math.atan(bs))));
+}
+
+// Fuerza lateral pura. alpha en radianes, Fz en newtons.
+function lateral(alpha, Fz, mu) {
+  return -mu * Fz * magica(alpha, LATERAL);
+}
+
+// Fuerza longitudinal pura. kappa es el deslizamiento (adimensional).
+function longitudinal(kappa, Fz, mu) {
+  return mu * Fz * magica(kappa, LONGITUDINAL);
+}
+
+// Elipse de fricción: acelerar y doblar comparten el mismo agarre. Si pedís
+// las dos cosas al mismo tiempo, las dos bajan. Es lo que hace que frenar y
+// girar juntos te mande de trompa afuera.
+function combinado(alpha, kappa, Fz, mu) {
+  if (Fz <= 0) return { fx: 0, fy: 0, uso: 0 };
+  // Se normaliza cada deslizamiento contra su propio pico y se combinan: el
+  // agarre es uno solo y se reparte entre doblar y traccionar.
+  const sa = alpha / LATERAL.pico;
+  const sk = kappa / LONGITUDINAL.pico;
+  const s = Math.hypot(sa, sk);
+  if (s < 1e-7) return { fx: 0, fy: 0, uso: 0 };
+  const total = mu * Fz * magica(s * LATERAL.pico, LATERAL);
+  return {
+    fx: (sk / s) * total,
+    fy: -(sa / s) * total,
+    uso: s,                       // 1 = justo en el límite de agarre
+  };
+}
+
+// La carga no da agarre lineal: al doblar el peso, el agarre sube menos del
+// doble. Por eso transferir peso a una rueda cuesta agarre total, y por eso
+// una barra estabilizadora dura de un lado hace que ese eje pierda antes.
+function muEfectivo(muNominal, Fz, FzNominal = 4000) {
+  if (Fz <= 0) return 0;
+  return muNominal * Math.pow(FzNominal / Math.max(Fz, 200), 0.11);
+}
+
+const T = { LATERAL, LONGITUDINAL, lateral, longitudinal, combinado, muEfectivo };
+
+// ===== sim/vehicle.js =====
+// Auto de simulación, no arcade. Seis grados de libertad:
+//   plano  -> avance, lateral y guiñada
+//   masa suspendida -> hundimiento, cabeceo y balanceo
+// Más la velocidad de giro de cada rueda, que es lo que permite patinar en
+// aceleración y bloquear en frenada.
+//
+// La transferencia de peso NO es una fórmula instantánea: sale de la dinámica
+// de resortes y amortiguadores. Por eso el auto tarda en apoyarse al entrar a
+// una curva, y por eso se puede desestabilizar levantando de golpe.
+//
+// Ejes locales: adelante = (sin yaw, cos yaw); derecha = (-cos yaw, sin yaw).
+
+const TC = {
+  nombre: 'TC 2000',
+  masa: 1180, masaSusp: 1010,
+  a: 1.28, b: 1.34,            // distancia del centro de gravedad a cada eje
+  vias: 1.56, h: 0.46,         // trocha y altura del centro de gravedad
+  Izz: 1620, Ipitch: 1500, Iroll: 480,
+  kF: 52000, kR: 48000,        // resortes por rueda (N/m)
+  cF: 4600, cR: 4300,          // amortiguadores (Ns/m)
+  arbF: 19500, arbR: 12500,    // barra delantera más dura: el auto avisa antes de irse
+  rueda: 0.315, Iw: 1.3, Imotor: 0.19, mu: 1.38,
+  parMax: 340, rpmPar: 5200, rpmCorte: 7000, rpmRalenti: 900,
+  marchas: [3.36, 2.14, 1.58, 1.24, 1.00, 0.84], final: 3.62,
+  traccion: 'trasera',
+  frenoMax: 4200, repFreno: 0.63,
+  arrastre: 0.72,              // N por (m/s)^2
+  cargaAero: 0.85,             // downforce por (m/s)^2
+  volanteMax: 0.52,            // radianes de giro de rueda a tope de volante
+};
+
+const ORDEN = ['DI', 'DD', 'TI', 'TD'];   // delantera izq/der, trasera izq/der
+
+class Vehicle {
+  constructor(spec = TC, x = 0, z = 0, yaw = 0) {
+    this.s = spec;
+    this.x = x; this.z = z; this.yaw = yaw;
+    this.u = 0; this.v = 0; this.r = 0;          // avance, lateral, guiñada
+    this.zs = 0; this.dzs = 0;                   // hundimiento
+    this.pitch = 0; this.dpitch = 0;
+    this.roll = 0; this.droll = 0;
+    this.marcha = 1; this.rpm = spec.rpmRalenti;
+    this.cambio = 0;
+
+    // Geometría de cada rueda en ejes locales: [longitudinal, lateral]
+    this.pos = {
+      DI: [+spec.a, -spec.vias / 2], DD: [+spec.a, +spec.vias / 2],
+      TI: [-spec.b, -spec.vias / 2], TD: [-spec.b, +spec.vias / 2],
+    };
+    // Carga estática: el eje delantero soporta según el reparto de pesos.
+    const g = 9.81, L = spec.a + spec.b;
+    const Ff = spec.masa * g * (spec.b / L) / 2;
+    const Fr = spec.masa * g * (spec.a / L) / 2;
+    this.estatico = { DI: Ff, DD: Ff, TI: Fr, TD: Fr };
+    this.w = { DI: 0, DD: 0, TI: 0, TD: 0 };       // velocidad angular de rueda
+    this.Fz = { ...this.estatico };
+    this.slipL = { DI: 0, DD: 0, TI: 0, TD: 0 };   // deriva
+    this.slipK = { DI: 0, DD: 0, TI: 0, TD: 0 };   // deslizamiento
+    this.uso = { DI: 0, DD: 0, TI: 0, TD: 0 };     // 1 = al límite
+
+    this.mandos = { acelerador: 0, freno: 0, volante: 0, mano: false, embrague: 0 };
+    this.ffb = 0;             // par de autoalineación: la señal para el volante
+    this.aLong = 0; this.aLat = 0;
+  }
+
+  get velocidad() { return Math.hypot(this.u, this.v); }
+  get kmh() { return this.velocidad * 3.6; }
+  adelante() { return { x: Math.sin(this.yaw), z: Math.cos(this.yaw) }; }
+  derecha() { return { x: -Math.cos(this.yaw), z: Math.sin(this.yaw) }; }
+
+  parMotor(rpm) {
+    const s = this.s;
+    if (rpm > s.rpmCorte) return 0;
+    // Curva simple con pico y caída, más un valle abajo de vueltas.
+    const x = (rpm - s.rpmPar) / (s.rpmPar * 0.95);
+    const f = clamp(1 - x * x * 0.72, 0.18, 1);
+    const arranque = clamp(rpm / 1400, 0.25, 1);
+    return s.parMax * f * arranque;
+  }
+
+  relacion() { return this.s.marchas[this.marcha - 1] * this.s.final; }
+
+  // Caja automática sencilla: sube cerca del corte, baja cuando cae de vueltas.
+  cambiar(dt) {
+    this.cambio = Math.max(0, this.cambio - dt);
+    if (this.cambio > 0) return;
+    const s = this.s;
+    if (this.rpm > s.rpmCorte * 0.96 && this.marcha < s.marchas.length) { this.marcha++; this.cambio = 0.18; }
+    else if (this.rpm < 2600 && this.marcha > 1) { this.marcha--; this.cambio = 0.18; }
+  }
+
+  paso(dt) {
+    if (this.rpmReal === undefined) this.rpmReal = this.s.rpmRalenti;
+    const s = this.s, g = 9.81;
+    const m = this.mandos;
+    const vel = this.velocidad;
+
+    // --- Cargas verticales por rueda (dinámica de suspensión) ---
+    const zc = {}, dzc = {};
+    for (const k of ORDEN) {
+      const [lo, la] = this.pos[k];
+      zc[k] = this.zs + lo * this.pitch - la * this.roll;
+      dzc[k] = this.dzs + lo * this.dpitch - la * this.droll;
+    }
+    const kOf = (k) => k[0] === 'D' ? s.kF : s.kR;
+    const cOf = (k) => k[0] === 'D' ? s.cF : s.cR;
+    const dF = {};
+    for (const k of ORDEN) dF[k] = -kOf(k) * zc[k] - cOf(k) * dzc[k];
+    // Barras estabilizadoras: reparten el balanceo entre ejes.
+    const arb = (izq, der, kb) => {
+      const t = kb * (zc[izq] - zc[der]);
+      dF[izq] -= t; dF[der] += t;
+    };
+    arb('DI', 'DD', s.arbF); arb('TI', 'TD', s.arbR);
+
+    for (const k of ORDEN) this.Fz[k] = Math.max(0, this.estatico[k] + dF[k]
+      + s.cargaAero * vel * vel / 4);
+
+    // --- Fuerzas de neumático ---
+    const delta = m.volante * s.volanteMax;
+    let Fx = 0, Fy = 0, Mz = 0, alineacion = 0;
+    const parFreno = m.freno * s.frenoMax;
+    const motriz = this.parMotriz(dt);
+
+    for (const k of ORDEN) {
+      const [lo, la] = this.pos[k];
+      // Velocidad en el punto de contacto. El signo de lo·r es el que da el
+      // amortiguamiento de guiñada: con el contrario, un auto que empieza a
+      // girar se realimenta y hace trompo con cualquier entrada. Verificado
+      // con la prueba de escalón de volante.
+      const uW = this.u - this.r * la;
+      const vW = this.v + this.r * lo;
+      const frente = k[0] === 'D';
+      const dir = frente ? delta : 0;
+
+      // Deriva y deslizamiento en ejes de la rueda.
+      const uR = uW * Math.cos(dir) + vW * Math.sin(dir);
+      const vR = -uW * Math.sin(dir) + vW * Math.cos(dir);
+      const ref = Math.max(Math.abs(uR), 1.6);
+      const alpha = Math.atan2(vR, ref);
+      const kappa = (this.w[k] * s.rueda - uR) / ref;
+      this.slipL[k] = alpha; this.slipK[k] = kappa;
+
+      const mu = T.muEfectivo(s.mu, this.Fz[k]);
+      const f = T.combinado(alpha, kappa, this.Fz[k], mu);
+      this.uso[k] = f.uso;
+
+      // Dinámica de la rueda: el par del motor y el freno contra el suelo.
+      const motrizK = motriz[k] || 0;
+      const frenoK = parFreno * (frente ? s.repFreno : 1 - s.repFreno) / 2
+        * (m.mano && !frente ? 2.2 : 1);
+      const parSuelo = f.fx * s.rueda;
+      const motriz_k = motrizK !== 0 || (s.traccion === 'trasera' ? !frente : true);
+      const rel = this.relacion();
+      const Ief = s.Iw + (motriz_k ? s.Imotor * rel * rel / 2 : 0);
+      const frenoAplicado = Math.sign(this.w[k]) * Math.min(frenoK, Math.abs(this.w[k]) * Ief / dt + Math.abs(parSuelo));
+      const dw = (motrizK - parSuelo - frenoAplicado) / Ief;
+      this.w[k] += dw * dt;
+      if (Math.abs(this.w[k]) < 0.4 && frenoK > 0) this.w[k] = 0;
+
+      // De ejes de rueda a ejes del auto.
+      const fx = f.fx * Math.cos(dir) - f.fy * Math.sin(dir);
+      const fy = f.fx * Math.sin(dir) + f.fy * Math.cos(dir);
+      Fx += fx; Fy += fy;
+      Mz += fy * lo - fx * la;
+      // El par de autoalineación de las delanteras ES la señal de force
+      // feedback: el avance del neumático por la fuerza lateral.
+      if (frente) alineacion += f.fy * 0.028;
+    }
+
+    Fx -= s.arrastre * this.u * Math.abs(this.u);
+    Fy -= 0.6 * this.v * Math.abs(this.v);
+
+    this.aLong = Fx / s.masa;
+    this.aLat = Fy / s.masa;
+    this.ffb = clamp(alineacion / 330, -1, 1);
+
+    // --- Integración del plano ---
+    this.u += (this.aLong + this.r * this.v) * dt;
+    this.v += (this.aLat - this.r * this.u) * dt;
+    this.r += (Mz / s.Izz) * dt;
+    this.r *= Math.exp(-dt * 0.35);
+
+    const f2 = this.adelante(), d2 = this.derecha();
+    this.x += (this.u * f2.x + this.v * d2.x) * dt;
+    this.z += (this.u * f2.z + this.v * d2.z) * dt;
+    this.yaw += this.r * dt;
+
+    // --- Integración de la masa suspendida ---
+    const ms = s.masaSusp;
+    let sumF = 0, momP = 0, momR = 0;
+    for (const k of ORDEN) {
+      const [lo, la] = this.pos[k];
+      sumF += dF[k]; momP += dF[k] * lo; momR -= dF[k] * la;
+    }
+    this.dzs += (sumF / ms) * dt;
+    this.dpitch += ((momP + ms * this.aLong * s.h) / s.Ipitch) * dt;
+    // El signo del término inercial del balanceo: verificado con un invariante
+    // geométrico (la rueda de AFUERA de la curva tiene que cargar más), no por
+    // razonamiento sobre convenciones.
+    this.droll += ((momR + ms * this.aLat * s.h) / s.Iroll) * dt;
+    this.zs += this.dzs * dt;
+    this.pitch += this.dpitch * dt;
+    this.roll += this.droll * dt;
+
+    // --- Motor ---
+    const wMotriz = s.traccion === 'trasera' ? (this.w.TI + this.w.TD) / 2
+      : s.traccion === 'delantera' ? (this.w.DI + this.w.DD) / 2
+      : (this.w.DI + this.w.DD + this.w.TI + this.w.TD) / 4;
+    // Se guarda el régimen REAL: recortarlo antes del limitador hacía que el
+    // corte no actuara nunca y el motor siguiera empujando sin techo.
+    this.rpmReal = Math.abs(wMotriz) * this.relacion() * 60 / (2 * Math.PI);
+    this.rpm = clamp(this.rpmReal, s.rpmRalenti, s.rpmCorte);
+    this.cambiar(dt);
+  }
+
+  // Par que llega a cada rueda motriz.
+  parMotriz(dt) {
+    const s = this.s, m = this.mandos;
+    if (this.cambio > 0 || m.acelerador <= 0) return {};
+    if (this.rpmReal > s.rpmCorte) return {};        // limitador
+    const par = this.parMotor(this.rpm) * m.acelerador * this.relacion() * 0.92;
+    if (s.traccion === 'trasera') return { TI: par / 2, TD: par / 2 };
+    if (s.traccion === 'delantera') return { DI: par / 2, DD: par / 2 };
+    return { DI: par / 4, DD: par / 4, TI: par / 4, TD: par / 4 };
+  }
+}
+
+// ===== track/spline.js =====
+// Curva cerrada Catmull-Rom remuestreada por longitud de arco. Que esté
+// parametrizada por METROS y no por el parámetro de la curva es lo que hace
+// que después funcionen los tiempos por vuelta, los sectores, la traza de la
+// IA y saber si estás dentro o fuera de la pista.
+class Spline {
+  constructor(puntos, muestras = 12) {
+    this.p = puntos;
+    this.tabla = [];
+    let acum = 0;
+    const n = puntos.length;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < muestras; j++) {
+        const t = j / muestras;
+        const a = this.crom(i, t);
+        const b = this.crom(i, t + 1 / muestras);
+        const d = Math.hypot(b.x - a.x, b.z - a.z);
+        this.tabla.push({ s: acum, i, t, x: a.x, z: a.z });
+        acum += d;
+      }
+    }
+    this.largo = acum;
+    // Tangente y normal en cada muestra, ya normalizadas.
+    for (let k = 0; k < this.tabla.length; k++) {
+      const a = this.tabla[k], b = this.tabla[(k + 1) % this.tabla.length];
+      let dx = b.x - a.x, dz = b.z - a.z;
+      const l = Math.hypot(dx, dz) || 1;
+      a.tx = dx / l; a.tz = dz / l;
+      a.nx = -a.tz; a.nz = a.tx;         // normal a la izquierda de la marcha
+    }
+    for (let k = 0; k < this.tabla.length; k++) {
+      const a = this.tabla[k], b = this.tabla[(k + 1) % this.tabla.length];
+      // Curvatura: cuánto gira la tangente por metro. La IA la usa para frenar.
+      const cross = a.tx * b.tz - a.tz * b.tx;
+      const ds = Math.max(0.5, (b.s - a.s + this.largo) % this.largo);
+      a.curv = cross / ds;
+    }
+  }
+
+  // Índice de tabla para una distancia dada, por búsqueda binaria.
+  indiceDe(s) {
+    const largo = this.largo;
+    s = ((s % largo) + largo) % largo;
+    const T = this.tabla;
+    let lo = 0, hi = T.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (T[m].s <= s) lo = m; else hi = m - 1; }
+    return lo;
+  }
+
+  crom(i, t) {
+    const p = this.p, n = p.length;
+    const p0 = p[(i - 1 + n) % n], p1 = p[i % n], p2 = p[(i + 1) % n], p3 = p[(i + 2) % n];
+    const t2 = t * t, t3 = t2 * t;
+    const f = (a, b, c, d) => 0.5 * ((2 * b) + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+    return { x: f(p0.x, p1.x, p2.x, p3.x), z: f(p0.z, p1.z, p2.z, p3.z) };
+  }
+
+  // Muestra correspondiente a una distancia s en METROS.
+  // Las muestras están espaciadas por parámetro de curva, no por longitud, así
+  // que interpolar por índice da un punto equivocado: hay que buscar en el
+  // campo s. Esto lo usan el cronómetro, la IA y la detección de pista.
+  en(s) {
+    const largo = this.largo;
+    s = ((s % largo) + largo) % largo;
+    const T = this.tabla;
+    let lo = 0, hi = T.length - 1;
+    while (lo < hi) {
+      const m = (lo + hi + 1) >> 1;
+      if (T[m].s <= s) lo = m; else hi = m - 1;
+    }
+    // Se interpola entre las dos muestras que envuelven a s. Sin esto el punto
+    // se engancha a la muestra anterior y da un error de hasta un espaciado.
+    const a = T[lo], b = T[(lo + 1) % T.length];
+    let ds = b.s - a.s;
+    if (ds <= 0) ds += largo;
+    const f = ds > 1e-6 ? (s - a.s) / ds : 0;
+    return {
+      s, i: a.i, t: a.t,
+      x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f,
+      tx: a.tx, tz: a.tz, nx: a.nx, nz: a.nz,
+      curv: a.curv + ((b.curv - a.curv) || 0) * f,
+    };
+  }
+
+  // Proyecta un punto del mundo sobre la traza. Devuelve la distancia s
+  // recorrida y el desvío lateral: con eso se sabe si estás en pista.
+  proyectar(x, z, cerca = null) {
+    let mejor = null, mejorD = Infinity;
+    const T = this.tabla, n = T.length;
+    // Si sabemos dónde estaba antes, sólo se mira alrededor: O(1) por frame.
+    const desde = cerca == null ? 0 : this.indiceDe(cerca) - 24;
+    const cuantos = cerca == null ? n : 48;
+    for (let j = 0; j < cuantos; j++) {
+      const a = T[((desde + j) % n + n) % n];
+      const d = (a.x - x) ** 2 + (a.z - z) ** 2;
+      if (d < mejorD) { mejorD = d; mejor = a; }
+    }
+    const dx = x - mejor.x, dz = z - mejor.z;
+    return {
+      s: mejor.s + dx * mejor.tx + dz * mejor.tz,
+      lateral: dx * mejor.nx + dz * mejor.nz,
+      muestra: mejor,
+    };
+  }
+}
+
+// ===== track/track.js =====
+// Circuito procedural: puntos de control sobre un anillo deformado, suavizados
+// en una curva cerrada. Cada semilla da un trazado distinto, con rectas,
+// curvas rápidas y algo lento donde frenar de verdad.
+function generarCircuito(semilla = 7, opciones = {}) {
+  const rng = makeRng(semilla);
+  const n = opciones.curvas || 16;
+  const radio = opciones.radio || 470;
+  // Radios al azar pero SUAVIZADOS: sin este paso salen quiebres con radios de
+  // doce metros, más cerrados que una playa de estacionamiento.
+  let radios = [];
+  for (let i = 0; i < n; i++) radios.push(rng.range(0.52, 1.46));
+  const angulos = [];
+  for (let i = 0; i < n; i++) angulos.push(rng.range(0.66, 1.34));
+  const sumaAng = angulos.reduce((a, b) => a + b, 0);
+
+  const armar = () => {
+    const pts = [];
+    let acum = 0;
+    for (let i = 0; i < n; i++) {
+      const a = (acum / sumaAng) * Math.PI * 2;
+      acum += angulos[i];
+      const r = radio * radios[i];
+      pts.push({ x: Math.cos(a) * r, z: Math.sin(a) * r * 0.84 });
+    }
+    return new Spline(pts, 26);
+  };
+  const radioMinimo = (sp) => {
+    let c = 0;
+    for (let d = 0; d < sp.largo; d += 4) c = Math.max(c, Math.abs(sp.en(d).curv || 0));
+    return c > 0 ? 1 / c : 1e9;
+  };
+
+  // Se suaviza sólo lo necesario: demasiado suave da un óvalo sin frenadas,
+  // demasiado crudo da quiebres imposibles. Se busca un radio mínimo de
+  // horquilla de verdad, entre 28 y 45 metros.
+  let linea = armar();
+  for (let intento = 0; intento < 8 && radioMinimo(linea) < 28; intento++) {
+    radios = radios.map((v, i) => (radios[(i - 1 + n) % n] + v * 3.2 + radios[(i + 1) % n]) / 5.2);
+    linea = armar();
+  }
+
+  // Ancho variable: se abre en las rectas y se cierra en lo lento.
+  const anchoEn = (s) => {
+    const m = linea.en(s);
+    const c = Math.abs(m.curv || 0);
+    return 10.5 + Math.max(0, 4.2 - c * 260);
+  };
+
+  return { linea, anchoEn, semilla, largo: linea.largo };
+}
+
+// Dónde está el auto respecto de la pista: en asfalto, en el piano, o afuera.
+function superficie(circuito, lateral, s) {
+  const w = circuito.anchoEn(s) / 2;
+  const d = Math.abs(lateral);
+  if (d < w) return { tipo: 'asfalto', mu: 1.0 };
+  if (d < w + 1.6) return { tipo: 'piano', mu: 0.92 };
+  if (d < w + 12) return { tipo: 'pasto', mu: 0.55 };
+  return { tipo: 'afuera', mu: 0.45 };
+}
+
+// ===== track/mesh.js =====
+// Geometría del circuito: cinta de asfalto, pianitos rojos y blancos,
+// escapatoria de pasto, guardrails y una largada pintada.
+const PASO = 6;              // metros entre secciones transversales
+const PIANO = 1.6;
+const ESCAPE = 13;
+
+function textura(color, ruido = 0.06, size = 64, semilla = 3) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const x = c.getContext('2d');
+  x.fillStyle = color; x.fillRect(0, 0, size, size);
+  const rng = makeRng(semilla);
+  for (let i = 0; i < size * size * 0.45; i++) {
+    const g = rng.chance(0.5) ? 255 : 0;
+    x.fillStyle = `rgba(${g},${g},${g},${rng.range(0, ruido)})`;
+    x.fillRect(rng.range(0, size), rng.range(0, size), 1, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function construirCircuito(circuito, escena) {
+  const grupo = new THREE.Group();
+  const asf = new MeshBuilder(), pianoA = new MeshBuilder(), pianoB = new MeshBuilder();
+  const pasto = new MeshBuilder(), rail = new MeshBuilder(), linea = new MeshBuilder();
+  const L = circuito.largo;
+  const n = Math.floor(L / PASO);
+
+  const banda = (mb, s0, s1, o0, o1, y) => {
+    const a = circuito.linea.en(s0), b = circuito.linea.en(s1);
+    mb.quad(
+      a.x + a.nx * o0, y, a.z + a.nz * o0,
+      a.x + a.nx * o1, y, a.z + a.nz * o1,
+      b.x + b.nx * o1, y, b.z + b.nz * o1,
+      b.x + b.nx * o0, y, b.z + b.nz * o0,
+      (o1 - o0) / 4, PASO / 4
+    );
+  };
+
+  for (let i = 0; i < n; i++) {
+    const s0 = i * PASO, s1 = (i + 1) * PASO;
+    const w0 = circuito.anchoEn(s0) / 2;
+    banda(asf, s0, s1, -w0, w0, 0.02);
+    banda(pasto, s0, s1, w0 + PIANO, w0 + PIANO + ESCAPE, 0.0);
+    banda(pasto, s0, s1, -w0 - PIANO - ESCAPE, -w0 - PIANO, 0.0);
+    // Pianito alternando color cada dos secciones.
+    const mb = (i % 2 === 0) ? pianoA : pianoB;
+    banda(mb, s0, s1, w0, w0 + PIANO, 0.05);
+    banda(mb, s0, s1, -w0 - PIANO, -w0, 0.05);
+
+    // Guardrail: postes y una chapa continua.
+    if (i % 2 === 0) {
+      for (const lado of [1, -1]) {
+        const o = (w0 + PIANO + ESCAPE) * lado;
+        const a = circuito.linea.en(s0), b = circuito.linea.en(s1 + PASO);
+        const ax = a.x + a.nx * o, az = a.z + a.nz * o;
+        const bx = b.x + b.nx * o, bz = b.z + b.nz * o;
+        rail.quad(ax, 0.45, az, bx, 0.45, bz, bx, 1.05, bz, ax, 1.05, az, 3, 1);
+        rail.quad(bx, 0.45, bz, ax, 0.45, az, ax, 1.05, az, bx, 1.05, bz, 3, 1);
+      }
+    }
+  }
+
+  // Largada: una franja blanca cruzando la pista.
+  {
+    const w = circuito.anchoEn(0) / 2;
+    banda(linea, 0, 2.2, -w, w, 0.06);
+  }
+
+  const material = (map, extra = {}) =>
+    new THREE.MeshLambertMaterial({ map, ...extra });
+  const agregar = (mb, mat) => {
+    if (!mb.count) return;
+    const m = new THREE.Mesh(mb.toGeometry(), mat);
+    m.receiveShadow = true;
+    grupo.add(m);
+  };
+
+  const tAsf = textura('#3c3f45', 0.09, 64, 11); tAsf.repeat.set(1, 1);
+  agregar(asf, material(tAsf));
+  agregar(pasto, material(textura('#33502c', 0.14, 64, 5)));
+  agregar(pianoA, new THREE.MeshLambertMaterial({ color: 0xcf3b30 }));
+  agregar(pianoB, new THREE.MeshLambertMaterial({ color: 0xe8e4d8 }));
+  agregar(rail, new THREE.MeshLambertMaterial({ color: 0xb9bcc2, side: THREE.DoubleSide }));
+  agregar(linea, new THREE.MeshBasicMaterial({ color: 0xf2efe6 }));
+
+  // Piso general más allá de la escapatoria.
+  const piso = new THREE.Mesh(
+    new THREE.PlaneGeometry(6000, 6000),
+    material(textura('#2c4426', 0.12, 64, 9))
+  );
+  piso.rotation.x = -Math.PI / 2;
+  piso.position.y = -0.05;
+  piso.material.map.repeat.set(300, 300);
+  grupo.add(piso);
+
+  escena.add(grupo);
+  return grupo;
+}
+
+// ===== input/wheel.js =====
+// Lectura del volante por Gamepad API, con teclado como respaldo.
+//
+// AVISO HONESTO: esto se escribió sin un G29 a mano para probarlo. El mapeo
+// por defecto es el habitual en Chrome, pero varía según sistema operativo y
+// según si los pedales están en modo combinado. Por eso hay calibración: se
+// aprende qué eje mueve cada pedal y su recorrido real, y se guarda.
+const GUARDADO = 'trazada.volante.v1';
+
+const PREDET = {
+  ejeVolante: 0,
+  ejeAcelerador: 1, ejeFreno: 2, ejeEmbrague: 3,
+  invAcelerador: true, invFreno: true, invEmbrague: true,
+  rangoGrados: 540,       // recorrido del volante usado de tope a tope
+  zonaMuerta: 0.012,
+};
+
+class Wheel {
+  constructor() {
+    this.cfg = { ...PREDET, ...this.leer() };
+    this.gp = null;
+    this.id = '';
+    this.crudos = [];
+    this.calibrando = null;
+    this.rangos = {};       // eje -> {min, max} aprendidos
+    this.teclas = new Set();
+    addEventListener('keydown', (e) => { this.teclas.add(e.code); });
+    addEventListener('keyup', (e) => { this.teclas.delete(e.code); });
+    addEventListener('gamepadconnected', (e) => { this.id = e.gamepad.id; });
+  }
+
+  leer() { try { return JSON.parse(localStorage.getItem(GUARDADO) || '{}'); } catch (_) { return {}; } }
+  guardar() { try { localStorage.setItem(GUARDADO, JSON.stringify(this.cfg)); } catch (_) {} }
+
+  buscar() {
+    const lista = navigator.getGamepads ? navigator.getGamepads() : [];
+    let mejor = null;
+    for (const g of lista) {
+      if (!g) continue;
+      const esVolante = /g29|g920|g27|driving force|logitech|wheel|thrustmaster|fanatec/i.test(g.id);
+      if (esVolante) { mejor = g; break; }
+      if (!mejor) mejor = g;
+    }
+    this.gp = mejor;
+    if (mejor) { this.id = mejor.id; this.crudos = Array.from(mejor.axes); }
+    return mejor;
+  }
+
+  get conectado() { return !!this.gp; }
+  get esVolante() { return !!this.gp && /g29|g920|g27|driving force|wheel|thrustmaster|fanatec/i.test(this.id); }
+
+  pedal(eje, invertir) {
+    if (!this.gp || eje == null || this.gp.axes[eje] === undefined) return 0;
+    let v = this.gp.axes[eje];
+    const r = this.rangos[eje];
+    if (r && r.max - r.min > 0.4) v = (v - r.min) / (r.max - r.min) * 2 - 1;
+    // Los pedales de Logitech descansan en +1 y llegan a -1 al fondo.
+    const u = invertir ? (1 - v) / 2 : (v + 1) / 2;
+    return Math.max(0, Math.min(1, u));
+  }
+
+  // Estado normalizado que consume el juego. `kmh` sólo se usa para suavizar
+  // la dirección por teclado; con volante de verdad el mando va uno a uno.
+  estado(kmh = 0) {
+    this.buscar();
+    const c = this.cfg;
+    const s = { volante: 0, acelerador: 0, freno: 0, embrague: 0, mano: false, volanteReal: false };
+
+    if (this.gp) {
+      const bruto = this.gp.axes[c.ejeVolante] || 0;
+      // El recorrido físico es de 900°; se usa sólo el tramo configurado.
+      const escala = 900 / Math.max(90, c.rangoGrados);
+      let v = bruto * escala;
+      if (Math.abs(v) < c.zonaMuerta) v = 0;
+      s.volante = Math.max(-1, Math.min(1, v));
+      s.acelerador = this.pedal(c.ejeAcelerador, c.invAcelerador);
+      s.freno = this.pedal(c.ejeFreno, c.invFreno);
+      s.embrague = this.pedal(c.ejeEmbrague, c.invEmbrague);
+      s.volanteReal = this.esVolante;
+      // Levas y botones: subir y bajar cambio.
+      s.subir = !!(this.gp.buttons[4] && this.gp.buttons[4].pressed);
+      s.bajar = !!(this.gp.buttons[5] && this.gp.buttons[5].pressed);
+    }
+
+    // Teclado: siempre disponible, y suma al volante si no hay nada conectado.
+    const t = this.teclas;
+    const kx = (t.has('KeyD') || t.has('ArrowRight') ? 1 : 0) - (t.has('KeyA') || t.has('ArrowLeft') ? 1 : 0);
+    // A 200 km/h nadie clava el volante a tope: con teclado hay que limitarlo
+    // o el auto se pasa de deriva y ara de trompa en cada curva.
+    const tope = Math.max(0.16, 1 / (1 + kmh * 0.011));
+    if (kx) {
+      this.tecladoVolante = Math.max(-tope, Math.min(tope, (this.tecladoVolante || 0) + kx * 0.055));
+    } else {
+      this.tecladoVolante = (this.tecladoVolante || 0) * 0.80;
+    }
+    this.tecladoVolante = Math.max(-tope, Math.min(tope, this.tecladoVolante));
+    if (!s.volanteReal && Math.abs(this.tecladoVolante) > 0.001) s.volante = this.tecladoVolante;
+    if (t.has('KeyW') || t.has('ArrowUp')) s.acelerador = 1;
+    if (t.has('KeyS') || t.has('ArrowDown')) s.freno = 1;
+    if (t.has('Space')) s.mano = true;
+    return s;
+  }
+
+  // Calibración: se aprende el recorrido de cada eje mientras el jugador
+  // mueve volante y pedales, y después se asigna el eje que más se movió.
+  empezarCalibracion() {
+    this.calibrando = { t: 0, rangos: {} };
+    this.rangos = {};
+  }
+  pasoCalibracion(dt) {
+    if (!this.calibrando) return null;
+    this.buscar();
+    this.calibrando.t += dt;
+    if (this.gp) {
+      this.gp.axes.forEach((v, i) => {
+        const r = this.calibrando.rangos[i] || (this.calibrando.rangos[i] = { min: v, max: v });
+        r.min = Math.min(r.min, v); r.max = Math.max(r.max, v);
+      });
+    }
+    return this.calibrando.t;
+  }
+  terminarCalibracion() {
+    if (!this.calibrando) return null;
+    const r = this.calibrando.rangos;
+    const movidos = Object.entries(r)
+      .map(([i, v]) => ({ i: +i, rec: v.max - v.min, ...v }))
+      .filter(e => e.rec > 0.35)
+      .sort((a, b) => b.rec - a.rec);
+    this.rangos = {};
+    for (const e of movidos) this.rangos[e.i] = { min: e.min, max: e.max };
+    this.calibrando = null;
+    return movidos;
+  }
+
+  asignar(campo, eje) { this.cfg[campo] = eje; this.guardar(); }
+}
+
+// ===== race/timing.js =====
+// Cronómetro: vueltas, parciales y mejor vuelta guardada.
+const CLAVE = 'trazada.mejores.v1';
+
+class Timing {
+  constructor(circuito, semilla) {
+    this.c = circuito;
+    this.clave = 'pista' + semilla;
+    this.vuelta = 0;
+    this.tiempo = 0;
+    this.mejor = this.leerMejor();
+    this.ultima = null;
+    this.sPrev = 0;
+    this.parciales = [0, 0, 0];
+    this.sector = 0;
+    this.vueltas = [];
+    this.valida = true;
+  }
+
+  leerMejor() {
+    try { return JSON.parse(localStorage.getItem(CLAVE) || '{}')[this.clave] ?? null; }
+    catch (_) { return null; }
+  }
+  guardarMejor(t) {
+    try {
+      const d = JSON.parse(localStorage.getItem(CLAVE) || '{}');
+      d[this.clave] = t;
+      localStorage.setItem(CLAVE, JSON.stringify(d));
+    } catch (_) {}
+  }
+
+  update(dt, s, enPista) {
+    this.tiempo += dt;
+    if (!enPista) this.valida = false;
+    const L = this.c.largo;
+    const tercio = L / 3;
+    const secActual = Math.min(2, Math.floor(s / tercio));
+    if (secActual !== this.sector && secActual === this.sector + 1) {
+      this.parciales[this.sector] = this.tiempo;
+      this.sector = secActual;
+    }
+    // Cruce de meta hacia adelante: s pasa de casi L a casi 0.
+    const cruzo = this.sPrev > L * 0.75 && s < L * 0.25;
+    this.sPrev = s;
+    if (!cruzo) return null;
+
+    const t = this.tiempo;
+    this.tiempo = 0; this.sector = 0;
+    this.vuelta++;
+    if (this.vuelta > 1) {
+      this.ultima = t;
+      this.vueltas.push({ t, valida: this.valida });
+      if (this.valida && (this.mejor === null || t < this.mejor)) {
+        this.mejor = t; this.guardarMejor(t);
+        this.valida = true;
+        return { tiempo: t, record: true };
+      }
+      const r = { tiempo: t, record: false, invalida: !this.valida };
+      this.valida = true;
+      return r;
+    }
+    this.valida = true;
+    return null;
+  }
+}
+
+function reloj(t) {
+  if (t == null) return '--:--.---';
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}:${s.toFixed(3).padStart(6, '0')}`;
+}
+
+// ===== race/piloto.js =====
+// ⚠ INCOMPLETO — NO ESTÁ ENCHUFADO AL JUEGO.
+//
+// Piloto automático por persecución pura, pensado como rival y como conductor
+// de pruebas. Sigue la traza y calcula la frenada por radio y agarre, pero HOY
+// NO COMPLETA UNA VUELTA: se va de pista en las curvas encadenadas y no sabe
+// recuperarse cuando queda cruzado o andando para atrás.
+//
+// Lo que falta, sabido:
+//   - Traza optimizada (entrada ancha, vértice, salida) en vez del eje de pista
+//   - Máquina de estados con recuperación: detectar trompo y reencarar
+//   - Ajustar la frenada midiendo contra vueltas reales, no contra la teoría
+//
+// Se deja en el repo porque el andamiaje sirve, no porque funcione.
+class Piloto {
+  constructor(circuito, opciones = {}) {
+    this.c = circuito;
+    this.agresividad = opciones.agresividad ?? 0.86;   // 1 = al límite teórico
+    this.horizonte = opciones.horizonte ?? 320;        // metros que mira adelante para frenar
+    this.s = 0;
+  }
+
+  // Velocidad máxima a la que se puede pasar por una curvatura dada.
+  vMax(curv, mu) {
+    const k = Math.abs(curv);
+    if (k < 1e-5) return 999;
+    return Math.sqrt(mu * 9.81 / k) * this.agresividad;
+  }
+
+  conducir(auto, sActual, lateral = 0, mu = 1.35) {
+    this.s = sActual;
+    const v = auto.velocidad;
+    const L = auto.s.a + auto.s.b;
+
+    // Persecución pura: se calcula la CURVATURA necesaria para llegar al punto
+    // de mira y de ahí el ángulo de rueda, en vez de multiplicar un error
+    // angular por una ganancia. La diferencia importa: una ganancia fija pide
+    // ángulos imposibles a alta velocidad y el auto hace trompo.
+    const Ld = clamp(11 + v * 0.72, 14, 75);
+    const obj = this.c.linea.en(sActual + Ld);
+    const dx = obj.x - auto.x, dz = obj.z - auto.z;
+    const dist = Math.max(6, Math.hypot(dx, dz));
+    const alfa = angDelta(auto.yaw, Math.atan2(dx, dz));
+    let delta = Math.atan(2 * L * Math.sin(alfa) / dist);
+
+    // Corrección de desvío. Volante positivo gira a la izquierda y la normal
+    // de la traza apunta a la derecha, así que el signo va en más.
+    delta += clamp(lateral * 0.016, -0.09, 0.09);
+    const volante = clamp(delta / auto.s.volanteMax, -1, 1);
+
+    let acelerador = 1, freno = 0;
+    const desac = mu * 7.2;
+    for (let d = 6; d < this.horizonte; d += 6) {
+      const m = this.c.linea.en(sActual + d);
+      const vc = this.vMax(m.curv, mu);
+      if (vc >= v) continue;
+      const necesaria = (v * v - vc * vc) / (2 * desac);
+      const margen = 14;
+      if (necesaria > d - margen) { freno = clamp((necesaria - d + margen) / 18, 0, 1); acelerador = 0; break; }
+    }
+    const aqui = this.vMax(this.c.linea.en(sActual + 6).curv, mu);
+    if (v > aqui * 1.04) { acelerador = 0; freno = Math.max(freno, 0.3); }
+    else if (freno === 0) acelerador = clamp(1 - Math.abs(volante) * 0.5, 0.3, 1);
+
+    // Elipse de fricción: el agarre es UNO SOLO. Frenar a fondo mientras
+    // doblás pide más de lo que hay y el auto se va de trompa o hace trompo.
+    // El freno cede ante la dirección, que es lo que hace un piloto de verdad.
+    const giro = Math.abs(volante);
+    freno *= clamp(1 - giro * 1.25, 0.12, 1);
+    acelerador *= clamp(1 - giro * 0.75, 0.22, 1);
+
+    auto.mandos.volante = volante;
+    auto.mandos.acelerador = acelerador;
+    auto.mandos.freno = freno;
+    auto.mandos.mano = false;
+    return { volante, acelerador, freno };
+  }
+}
+
+// ===== ui/hud.js =====
+const CSS = `
+#hud{position:fixed;inset:0;pointer-events:none;color:#eef1f5;
+  font:500 13px/1.35 ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;
+  text-shadow:0 1px 3px rgba(0,0,0,.8)}
+#hud .p{position:absolute;background:rgba(10,13,18,.55);backdrop-filter:blur(7px);
+  border:1px solid rgba(255,255,255,.10);border-radius:10px;padding:10px 13px}
+#tiempos{top:14px;left:14px;min-width:210px}
+#tiempos .f{display:flex;justify-content:space-between;gap:16px;margin:2px 0}
+#tiempos .k{opacity:.6;font-weight:400}
+#tiempos .v{font-variant-numeric:tabular-nums;font-weight:650}
+#tiempos .act{font-size:24px;font-weight:750;letter-spacing:-.5px}
+#tiempos .rec{color:#b98cff}
+#tacho{bottom:16px;right:16px;text-align:right;min-width:230px}
+#tacho .vel{font-size:52px;font-weight:800;line-height:.95;font-variant-numeric:tabular-nums}
+#tacho .vel i{font-style:normal;font-size:13px;font-weight:500;opacity:.55;margin-left:5px}
+#tacho .marcha{font-size:34px;font-weight:800;color:#ffc447}
+#tacho .rpm{height:7px;background:rgba(255,255,255,.13);border-radius:4px;overflow:hidden;margin-top:7px}
+#tacho .rpm i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#5ad1a0,#ffc447 72%,#ff4d4d 92%)}
+#gomas{bottom:16px;left:16px;display:grid;grid-template-columns:52px 52px;gap:6px;padding:11px}
+#gomas b{display:block;height:34px;border-radius:5px;background:#2a2f38;position:relative;overflow:hidden}
+#gomas b i{position:absolute;inset:auto 0 0 0;display:block;background:#5ad1a0}
+#gomas .rot{grid-column:1 / span 2;text-align:center;font-size:10px;opacity:.55;letter-spacing:.6px}
+#mapa{top:14px;right:14px;padding:8px;line-height:0}
+#aviso{top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:20px;
+  font-weight:700;opacity:0;transition:opacity .25s;padding:12px 22px}
+#volante{bottom:16px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.75;text-align:center}
+#volante .b{width:210px;height:5px;background:rgba(255,255,255,.14);border-radius:3px;margin:5px auto 0;position:relative}
+#volante .b i{position:absolute;top:-3px;width:3px;height:11px;background:#ffc447;border-radius:2px;left:50%}
+#ayuda{position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5}
+kbd{background:rgba(255,255,255,.14);border-radius:3px;padding:1px 5px;font:inherit;font-size:10px}
+`;
+
+class Hud {
+  constructor() {
+    const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
+    const r = document.createElement('div'); r.id = 'hud';
+    r.innerHTML = `
+      <div class="p" id="tiempos">
+        <div class="act" id="v-act">0:00.000</div>
+        <div class="f"><span class="k">Mejor</span><span class="v rec" id="v-mejor">--:--.---</span></div>
+        <div class="f"><span class="k">Última</span><span class="v" id="v-ult">--:--.---</span></div>
+        <div class="f"><span class="k">Vuelta</span><span class="v" id="v-vta">1</span></div>
+      </div>
+      <div class="p" id="tacho">
+        <div><span class="marcha" id="v-marcha">1</span></div>
+        <div class="vel"><span id="v-kmh">0</span><i>km/h</i></div>
+        <div class="rpm"><i id="v-rpm"></i></div>
+      </div>
+      <div class="p" id="gomas">
+        <b><i id="v-DI"></i></b><b><i id="v-DD"></i></b>
+        <b><i id="v-TI"></i></b><b><i id="v-TD"></i></b>
+        <div class="rot">CARGA POR RUEDA</div>
+      </div>
+      <div class="p" id="mapa"><canvas id="v-mapa" width="190" height="190"></canvas></div>
+      <div class="p" id="aviso"><span id="v-aviso"></span></div>
+      <div class="p" id="volante">
+        <span id="v-vol">Teclado</span>
+        <div class="b"><i id="v-volpos"></i></div>
+      </div>
+      <div id="ayuda"><kbd>W A S D</kbd> manejar · <kbd>R</kbd> volver a pista · <kbd>C</kbd> calibrar volante</div>`;
+    document.body.appendChild(r);
+    this.el = (id) => document.getElementById(id);
+    this.ctx = this.el('v-mapa').getContext('2d');
+  }
+
+  update(g) {
+    const v = g.auto, t = g.timing;
+    this.el('v-act').textContent = reloj(t.tiempo);
+    this.el('v-mejor').textContent = reloj(t.mejor);
+    this.el('v-ult').textContent = reloj(t.ultima);
+    this.el('v-vta').textContent = Math.max(1, t.vuelta);
+
+    this.el('v-kmh').textContent = Math.round(Math.max(0, v.kmh));
+    this.el('v-marcha').textContent = v.marcha;
+    const frac = Math.min(1, (v.rpm - v.s.rpmRalenti) / (v.s.rpmCorte - v.s.rpmRalenti));
+    this.el('v-rpm').style.width = (frac * 100) + '%';
+
+    // Carga por rueda: se ve la transferencia de peso en vivo.
+    for (const k of ['DI', 'DD', 'TI', 'TD']) {
+      const e = this.el('v-' + k);
+      const carga = Math.min(1, v.Fz[k] / (v.estatico[k] * 2.1));
+      e.style.height = (carga * 100) + '%';
+      const uso = v.uso[k];
+      e.style.background = uso > 1.02 ? '#ff4d4d' : uso > 0.88 ? '#ffc447' : '#5ad1a0';
+    }
+
+    this.el('v-vol').textContent = g.wheel.conectado
+      ? (g.wheel.esVolante ? 'Volante: ' + g.wheel.id.slice(0, 34) : 'Mando: ' + g.wheel.id.slice(0, 30))
+      : 'Teclado (no hay volante conectado)';
+    this.el('v-volpos').style.left = `calc(${50 + v.mandos.volante * 48}% - 1.5px)`;
+
+    const av = this.el('aviso');
+    av.style.opacity = g.avisoT > 0 ? '1' : '0';
+    if (g.avisoT > 0) this.el('v-aviso').innerHTML = g.aviso;
+
+    this.dibujarMapa(g);
+  }
+
+  dibujarMapa(g) {
+    const c = this.ctx, W = 190;
+    c.clearRect(0, 0, W, W);
+    const L = g.circuito.linea;
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    if (!this._lim) {
+      for (const p of L.tabla) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+      this._lim = { x0, x1, z0, z1 };
+    }
+    const l = this._lim, m = 12;
+    const k = Math.min((W - m * 2) / (l.x1 - l.x0), (W - m * 2) / (l.z1 - l.z0));
+    const tf = (x, z) => [m + (x - l.x0) * k, m + (z - l.z0) * k];
+
+    c.strokeStyle = '#59606d'; c.lineWidth = 4; c.lineJoin = 'round';
+    c.beginPath();
+    L.tabla.forEach((p, i) => { const q = tf(p.x, p.z); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
+    c.closePath(); c.stroke();
+
+    const meta = tf(L.tabla[0].x, L.tabla[0].z);
+    c.strokeStyle = '#f2efe6'; c.lineWidth = 2;
+    c.beginPath(); c.arc(meta[0], meta[1], 3.5, 0, Math.PI * 2); c.stroke();
+
+    const p = tf(g.auto.x, g.auto.z);
+    c.fillStyle = '#ffc447';
+    c.beginPath(); c.arc(p[0], p[1], 4, 0, Math.PI * 2); c.fill();
+  }
+}
+
+// ===== main.js =====
+// La física corre a paso FIJO de 400 Hz, desacoplada del dibujo. Esto no es
+// un capricho: a 60 Hz el volante se siente gomoso y el neumático pierde el
+// pico. Es la diferencia entre un simulador y un jueguito.
+const HZ = 400, DT = 1 / HZ;
+const SEMILLA = Number(new URLSearchParams(location.search).get('pista') || 7);
+
+class Juego {
+  async init() {
+    const paso = (t) => new Promise(r => {
+      document.getElementById('carga').textContent = t;
+      requestAnimationFrame(() => requestAnimationFrame(r));
+    });
+
+    await paso('Trazando el circuito…');
+    this.circuito = generarCircuito(SEMILLA);
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.renderer.setSize(innerWidth, innerHeight);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
+    document.body.appendChild(this.renderer.domElement);
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x8fb6d9);
+    this.scene.fog = new THREE.Fog(0x8fb6d9, 320, 1500);
+    this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 3000);
+
+    await paso('Asfaltando…');
+    construirCircuito(this.circuito, this.scene);
+
+    this.scene.add(new THREE.HemisphereLight(0xbdd6f5, 0x4a5240, 1.15));
+    const sol = new THREE.DirectionalLight(0xfff2d8, 1.9);
+    sol.position.set(220, 340, 140);
+    this.scene.add(sol);
+
+    await paso('Bajando el auto del camión…');
+    this.auto = new Vehicle(TC);
+    this.colocarEnGrilla();
+    this.mallaAuto = this.construirAuto();
+    this.scene.add(this.mallaAuto);
+
+    this.wheel = new Wheel();
+    this.timing = new Timing(this.circuito, SEMILLA);
+    this.hud = new Hud();
+    this.aviso = ''; this.avisoT = 0;
+    this.sActual = 0;
+    this.acumulado = 0;
+    this.camPos = new THREE.Vector3();
+
+    addEventListener('resize', () => this.onResize());
+    addEventListener('keydown', (e) => {
+      if (e.code === 'KeyR') this.colocarEnPista();
+      if (e.code === 'KeyC') this.calibrar();
+    });
+
+    document.getElementById('splash').classList.add('listo');
+    this.decir(this.wheel.conectado ? 'Volante detectado' : 'Sin volante: se juega con W A S D', 3);
+    this.last = performance.now();
+    requestAnimationFrame(this.loop.bind(this));
+  }
+
+  decir(t, s = 2.5) { this.aviso = t; this.avisoT = s; }
+
+  colocarEnGrilla() {
+    const m = this.circuito.linea.en(this.circuito.largo - 40);
+    this.auto.x = m.x; this.auto.z = m.z;
+    this.auto.yaw = Math.atan2(m.tx, m.tz);
+    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+  }
+
+  // Volver a pista mirando hacia adelante, sin perder la posición de vuelta.
+  colocarEnPista() {
+    const m = this.circuito.linea.en(this.sActual);
+    this.auto.x = m.x; this.auto.z = m.z;
+    this.auto.yaw = Math.atan2(m.tx, m.tz);
+    this.auto.u = 0; this.auto.v = 0; this.auto.r = 0;
+    this.auto.roll = this.auto.pitch = this.auto.zs = 0;
+    this.auto.droll = this.auto.dpitch = this.auto.dzs = 0;
+    for (const k of ['DI', 'DD', 'TI', 'TD']) this.auto.w[k] = 0;
+    this.timing.valida = false;
+    this.decir('De vuelta en pista (vuelta invalidada)', 2);
+  }
+
+  construirAuto() {
+    const g = new THREE.Group();
+    const b = new MeshBuilder();
+    const hw = 0.76, hl = 2.15;   // más angosta que la trocha: las ruedas tienen que asomar
+    b.box(-hw, -hl, hw, hl, 0.28, 0.72, 2, 2, 2);
+    b.box(-hw * 0.82, -hl * 0.34, hw * 0.82, hl * 0.52, 0.72, 1.12, 2, 2, 2);
+    b.box(-hw * 1.02, hl - 0.28, hw * 1.02, hl, 0.30, 0.55, 2, 2, 2);
+    const cuerpo = new THREE.Mesh(b.toGeometry(), new THREE.MeshLambertMaterial({ color: 0xd8382f }));
+    cuerpo.castShadow = true; g.add(cuerpo);
+
+    const vidrio = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.34, 0.9),
+      new THREE.MeshLambertMaterial({ color: 0x101418 }));
+    vidrio.position.set(0, 0.94, 0.42); g.add(vidrio);
+
+    const alerón = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.07, 0.36),
+      new THREE.MeshLambertMaterial({ color: 0x1c1f24 }));
+    alerón.position.set(0, 1.14, -hl + 0.18); g.add(alerón);
+
+    const rg = new THREE.CylinderGeometry(0.315, 0.315, 0.26, 14);
+    rg.rotateZ(Math.PI / 2);
+    const rm = new THREE.MeshLambertMaterial({ color: 0x15171b });
+    this.ruedas = {};
+    for (const [k, lo, la] of [['DI', 1.28, -0.86], ['DD', 1.28, 0.86], ['TI', -1.34, -0.86], ['TD', -1.34, 0.86]]) {
+      const w = new THREE.Mesh(rg, rm);
+      w.position.set(la, 0.315, lo);
+      g.add(w); this.ruedas[k] = w;
+    }
+    return g;
+  }
+
+  onResize() {
+    this.camera.aspect = innerWidth / innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(innerWidth, innerHeight);
+  }
+
+  calibrar() {
+    if (this.wheel.calibrando) return;
+    this.wheel.empezarCalibracion();
+    this.decir('CALIBRANDO: girá el volante de tope a tope y pisá los tres pedales a fondo', 6);
+    setTimeout(() => {
+      const ejes = this.wheel.terminarCalibracion();
+      this.decir(ejes && ejes.length
+        ? `Calibrado: ${ejes.length} ejes reconocidos (${ejes.map(e => 'eje ' + e.i).join(', ')})`
+        : 'No se movió ningún eje. ¿Está conectado el volante?', 5);
+    }, 6000);
+  }
+
+  fisica(dt) {
+    const e = this.wheel.estado(this.auto.kmh);
+    const a = this.auto;
+    // La convención interna es que mandos.volante positivo dobla a la
+    // izquierda; el jugador espera que girar a la derecha doble a la derecha.
+    a.mandos.volante = -e.volante;
+    a.mandos.acelerador = e.acelerador;
+    a.mandos.freno = e.freno;
+    a.mandos.mano = e.mano;
+
+    // El agarre cambia según dónde estén las ruedas: asfalto, piano o pasto.
+    const p = this.circuito.linea.proyectar(a.x, a.z, this.sActual);
+    this.sActual = ((p.s % this.circuito.largo) + this.circuito.largo) % this.circuito.largo;
+    const sup = superficie(this.circuito, p.lateral, this.sActual);
+    a.s = { ...TC, mu: TC.mu * sup.mu };
+    this.superficie = sup;
+
+    a.paso(dt);
+    this.timing.update(dt, this.sActual, sup.tipo === 'asfalto' || sup.tipo === 'piano');
+  }
+
+  update(dtReal) {
+    if (this.wheel.calibrando) this.wheel.pasoCalibracion(dtReal);
+    this.avisoT = Math.max(0, this.avisoT - dtReal);
+
+    // Acumulador de paso fijo: la física no depende de los cuadros por segundo.
+    this.acumulado += Math.min(dtReal, 0.25);
+    let pasos = 0;
+    while (this.acumulado >= DT && pasos < 240) {
+      const antes = this.timing.vuelta;
+      this.fisica(DT);
+      if (this.timing.vuelta > antes && this.timing.ultima != null) {
+        const r = this.timing.vueltas[this.timing.vueltas.length - 1];
+        this.decir(r.valida
+          ? (this.timing.mejor === r.t ? `RÉCORD · ${reloj(r.t)}` : `Vuelta ${reloj(r.t)}`)
+          : `Vuelta inválida (${reloj(r.t)}) — te fuiste de pista`, 3.5);
+      }
+      this.acumulado -= DT;
+      pasos++;
+    }
+
+    const a = this.auto;
+    this.mallaAuto.position.set(a.x, -a.zs * 0.6, a.z);
+    this.mallaAuto.rotation.set(a.pitch * 0.55, a.yaw, -a.roll * 0.85, 'YXZ');
+    for (const k of ['DI', 'DD', 'TI', 'TD']) {
+      const w = this.ruedas[k];
+      w.rotation.x = a.w[k] * 0.35;
+      w.rotation.y = k[0] === 'D' ? a.mandos.volante * TC.volanteMax : 0;
+    }
+
+    this.camara(dtReal);
+    this.hud.update(this);
+  }
+
+  camara(dt) {
+    const a = this.auto;
+    const f = a.adelante();
+    const vel = clamp(a.velocidad / 60, 0, 1);
+    const dist = lerp(8.2, 11.4, vel);
+    const alto = lerp(3.3, 4.0, vel);
+    const objetivo = new THREE.Vector3(a.x - f.x * dist, alto, a.z - f.z * dist);
+    if (this.camPos.lengthSq() === 0) this.camPos.copy(objetivo);
+    this.camPos.lerp(objetivo, Math.min(1, dt * 7));
+    this.camera.position.copy(this.camPos);
+    this.camera.lookAt(a.x + f.x * 9, 0.9, a.z + f.z * 9);
+    // El campo de visión se abre con la velocidad: da sensación de vértigo.
+    const fov = lerp(60, 76, vel);
+    if (Math.abs(this.camera.fov - fov) > 0.15) {
+      this.camera.fov = fov; this.camera.updateProjectionMatrix();
+    }
+  }
+
+  loop(now) {
+    requestAnimationFrame(this.loop.bind(this));
+    let dt = (now - this.last) / 1000;
+    this.last = now;
+    if (dt <= 0) return;
+    this.update(Math.min(dt, 0.1));
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
+const juego = new Juego();
+window.juego = juego;
+juego.init().catch(e => {
+  document.getElementById('carga').textContent = 'Se rompió: ' + e.message;
+  console.error(e);
+});
+
+{
+  const foco = document.getElementById('foco');
+  const arrancar = () => { window.focus(); foco.classList.add('oculto'); };
+  foco.addEventListener('click', arrancar);
+  addEventListener('keydown', () => foco.classList.add('oculto'), { once: true });
+  const esperar = setInterval(() => {
+    if (window.juego && window.juego.auto) { clearInterval(esperar); foco.classList.remove('oculto'); }
+  }, 250);
+}
+</script>
