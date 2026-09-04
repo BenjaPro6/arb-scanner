@@ -1,0 +1,48 @@
+# Defaults for the pipeline.  Every value here is a starting point calibrated
+# on simulated data - refit them against your own capture before trusting any
+# of them with money.
+
+decision:
+  # Seconds after launch when the buy/skip call is made.  Shorter means less
+  # information and more competition; longer means you are buying what the
+  # snipers already own.  This is the single most consequential knob, and it
+  # is worth sweeping rather than assuming.
+  age_seconds: 10.0
+
+collector:
+  log_dir: data/raw
+  db_path: data/events.db
+  watch_seconds: 600.0    # how long to follow a token after launch
+  max_watched: 300        # per-connection subscription budget
+
+execution:
+  entry_delay: 1.0        # seconds from decision to our buy landing
+  exit_delay: 1.2
+  delay_jitter: 0.4
+  priority_fee_sol: 0.0015
+  fee_bps: 100            # protocol trade fee, each way
+  entry_failure_rate: 0.12
+  exit_failure_rate: 0.06
+  max_slippage: 0.35      # abort the buy if price ran this far while in flight
+
+exit_policy:
+  take_profit: 3.0        # bank it at 3x
+  stop_loss: 0.55         # cut at -45%
+  trailing_stop: 0.35     # give back at most 35% from the high
+  trail_arm: 1.4          # only arm the trail once up 40%
+  max_hold: 300.0         # time stop, seconds
+
+portfolio:
+  starting_capital_sol: 10.0
+  position_sol: 0.25
+  max_concurrent: 3
+  max_pool_share: 0.15    # never take more than this share of the curve's SOL
+
+model:
+  folds: 5
+  min_train: 60
+  profit_threshold: 1.30  # a "win" must clear costs, not just print green
+  entry_threshold: 0.5
+
+validation:
+  permutations: 24        # at least 19 are needed to reach p<=0.05

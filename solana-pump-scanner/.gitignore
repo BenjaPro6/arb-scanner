@@ -1,0 +1,10 @@
+data/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.jsonl.gz
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
