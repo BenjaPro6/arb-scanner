@@ -31,7 +31,7 @@ from .curve import (
     LAMPORTS_PER_SOL,
     CurveState,
     quote_buy,
-    quote_sell,
+    sell_value,
     state_from_reserves,
 )
 from .reconstruct import TokenTimeline
@@ -285,13 +285,14 @@ def simulate_exit(
 
 
 def _sell(state: CurveState, tokens: int, fee_bps: int, model: ExecutionModel) -> int:
-    """Net lamports received, after protocol fee and transaction costs."""
-    if state.complete:
-        # Post-graduation we cannot quote the curve; treat the bag as
-        # unrealisable here rather than inventing an AMM price.
-        return 0
-    try:
-        gross = quote_sell(state, tokens, fee_bps).sol_out_net
-    except Exception:
-        return 0
-    return max(0, gross - model.fixed_exit_cost)
+    """Net lamports received, after protocol fee and transaction costs.
+
+    A graduated curve is valued at what it was worth on the way out rather
+    than written off.  Graduation means the token reached ~85 SOL and migrated
+    to an AMM with real liquidity - the single best outcome here - so returning
+    zero would delete precisely the winners from every result, and would bias
+    any parameter sweep towards taking profit early.  We do not model the AMM,
+    so this is the conservative reading: roughly what you could have got at the
+    moment of migration, and nothing for whatever the pool did afterwards.
+    """
+    return max(0, sell_value(state, tokens, fee_bps) - model.fixed_exit_cost)

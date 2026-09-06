@@ -4,6 +4,7 @@ Each test here pins down a cost that a naive backtest sets to zero.  Together
 they are the difference between a simulated edge and a real one.
 """
 
+from pumpscan.curve import state_from_reserves
 from pumpscan.execution import (
     ExecutionModel,
     ExitPolicy,
@@ -108,13 +109,20 @@ def test_model_is_reproducible_after_reset():
     assert [model.sample_entry_delay() for _ in range(20)] == first
 
 
-def test_trailing_stop_locks_in_gains_on_tokens_that_run():
-    """Where the trailing stop actually earns its keep.
+def test_trailing_stop_truncates_the_right_tail():
+    """The cost of a trailing stop, which is easy to miss and expensive.
 
-    Not, as one might assume, by escaping rugs - see the test below for why it
-    cannot - but by banking the gains on tokens that rise and then fade.  A
-    token that runs 3x and drifts back to 1.2x pays nothing to a holder and
-    pays well to a trailing stop.
+    On a venue where nearly all the profit comes from the few tokens that run
+    all the way to graduation, an aggressive trail takes you out of exactly
+    those - it fires on the first deep pullback of a token that was going to
+    keep going.  Holding realises more in aggregate here, and the difference is
+    entirely in the tokens that graduated.
+
+    This is the opposite of what the code originally assumed.  An earlier
+    version valued a graduated position at zero, which deleted every winner
+    from the comparison and made the trail look free; with graduation valued
+    honestly the trade-off reverses.  A stop protects against the middle of the
+    distribution and pays for it out of the tail.
     """
     model = ExecutionModel(entry_failure_rate=0.0, exit_failure_rate=0.0,
                            delay_jitter=0.0, seed=9)
@@ -122,16 +130,75 @@ def test_trailing_stop_locks_in_gains_on_tokens_that_run():
     hold = ExitPolicy(trailing_stop=1.0, take_profit=1e9, stop_loss=0.0, max_hold=300.0)
 
     with_trail = without = 0
+    graduations = 0
     for tl in _timelines(600, seed=11):
         fill = attempt_entry(tl, 10.0, 0.25, model, max_slippage=float("inf"))
         if not fill.filled:
             continue
-        with_trail += simulate_exit(tl, fill, trailing, model).proceeds
-        without += simulate_exit(tl, fill, hold, model).proceeds
+        a = simulate_exit(tl, fill, trailing, model)
+        b = simulate_exit(tl, fill, hold, model)
+        with_trail += a.proceeds
+        without += b.proceeds
+        if b.reason == "graduated":
+            graduations += 1
 
-    assert with_trail > without, (
-        f"trailing stop realised {with_trail} vs {without} holding"
+    assert graduations > 5, "need graduated tokens for this comparison to mean anything"
+    assert without > with_trail, (
+        f"holding realised {without} vs {with_trail} trailing; if this flips, check "
+        "how graduated positions are being valued"
     )
+
+
+def test_a_graduated_position_is_not_worthless():
+    """Graduation is the best outcome here and must never mark to zero.
+
+    Reaching an AMM means the curve filled to ~85 SOL. A valuation that
+    returned zero there - as an earlier version did, because `quote_sell`
+    refuses a completed curve - silently deleted the winners from every
+    backtest and biased any parameter sweep towards taking profit early.
+    """
+    from pumpscan.curve import CurveState, lamports, quote_buy, sell_value
+
+    state = CurveState()
+    bought = quote_buy(state, lamports(1.0))
+    position = bought.tokens_out
+    while not state.complete:
+        state = quote_buy(state, lamports(2.0)).state
+
+    assert state.complete
+    # Valuation must work on a graduated curve even though trading must not.
+    assert state.value_of(position) > 0
+    assert sell_value(state, position) > 0
+    # And it must be worth far more than the SOL that bought it.
+    assert sell_value(state, position) > lamports(1.0) * 3
+
+
+def test_trailing_stop_never_fires_on_a_position_that_did_not_rise():
+    """The trail must be armed by a real gain, not by noise around entry."""
+    model = ExecutionModel(entry_failure_rate=0.0, exit_failure_rate=0.0,
+                           delay_jitter=0.0, seed=4)
+    trailing = ExitPolicy(trailing_stop=0.3, take_profit=1e9, stop_loss=0.0,
+                          max_hold=300.0, trail_arm=1.4)
+
+    for tl in _timelines(300, seed=17):
+        fill = attempt_entry(tl, 10.0, 0.25, model, max_slippage=float("inf"))
+        if not fill.filled or fill.state is None:
+            continue
+        result = simulate_exit(tl, fill, trailing, model)
+        if result.reason != "trailing_stop":
+            continue
+        # It fired, so the position must have been up at least trail_arm at
+        # some point.
+        entry_value = fill.state.value_of(fill.tokens)
+        peak = max(
+            (
+                state_from_reserves(e.virtual_sol, e.virtual_tokens).value_of(fill.tokens)
+                for e in tl.after(fill.age)
+                if e.virtual_sol and e.virtual_tokens
+            ),
+            default=entry_value,
+        )
+        assert peak / entry_value >= 1.4
 
 
 def test_an_atomic_rug_cannot_be_escaped():

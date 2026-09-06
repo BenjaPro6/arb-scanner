@@ -26,6 +26,7 @@ false.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -209,3 +210,148 @@ def build_samples(timelines, decision_age: float = 10.0, policy=None, position_s
         )
         history.record(tl.creator, tl.created_at, outcome.peak_multiple, outcome.rugged)
     return samples
+
+
+@dataclass
+class TrainedModel:
+    """A fitted classifier plus the context needed to judge it later.
+
+    Persisting the estimator alone would be a trap.  A score of 0.8 means
+    nothing without knowing what it was trained to predict, on how much data,
+    and - above all - what the *walk-forward* AUC was, since that is the only
+    honest estimate of how it behaves on tokens it has never seen.  The final
+    model is deliberately fitted on everything, so its own training fit is
+    meaningless and is never stored.
+
+    Anything that loads one of these gets the caveats along with the weights.
+    """
+
+    estimator: object
+    feature_names: list[str]
+    profit_threshold: float
+    trained_on: int
+    positive_rate: float
+    walk_forward_auc: float
+    fold_auc: list[float] = field(default_factory=list)
+    decision_age: float = 10.0
+    trained_at: float = 0.0
+    feature_importance: dict[str, float] = field(default_factory=dict)
+
+    def score(self, features: dict[str, float]) -> float:
+        """Probability this launch clears the profit threshold."""
+        import numpy as np
+
+        vector = np.array([[features.get(name, 0.0) for name in self.feature_names]], dtype=float)
+        return float(self.estimator.predict_proba(vector)[0, 1])
+
+    def save(self, path: str | Path) -> Path:
+        import pickle
+
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "wb") as fh:
+            pickle.dump(self, fh)
+        return target
+
+    @staticmethod
+    def load(path: str | Path) -> "TrainedModel":
+        import pickle
+
+        with open(path, "rb") as fh:
+            model = pickle.load(fh)
+        if not isinstance(model, TrainedModel):
+            raise ValueError(f"{path} does not contain a TrainedModel")
+        return model
+
+    def summary(self) -> str:
+        lines = [
+            f"trained on        : {self.trained_on} tokens, "
+            f"{100 * self.positive_rate:.1f}% of them profitable",
+            f"decision age      : {self.decision_age:.0f}s",
+            f"profit threshold  : {self.profit_threshold:.2f}x after costs",
+            f"walk-forward AUC  : {self.walk_forward_auc:.3f} "
+            f"(folds {[round(a, 3) for a in self.fold_auc]})",
+        ]
+        if self.walk_forward_auc < 0.55:
+            lines.append(
+                "  -> at this AUC the model is barely distinguishable from a coin flip; "
+                "do not trade it"
+            )
+        return "\n".join(lines)
+
+
+def train_final_model(
+    samples: list[Sample],
+    profit_threshold: float = DEFAULT_PROFIT_THRESHOLD,
+    decision_age: float = 10.0,
+    n_folds: int = 5,
+    seed: int = 0,
+) -> TrainedModel:
+    """Fit the model you would actually deploy, and attach an honest score to it.
+
+    Two fits happen here and they serve different purposes.  The walk-forward
+    run estimates how the approach generalises; the final fit, over every row,
+    is what goes live - it is strictly better informed than any fold model, and
+    strictly impossible to evaluate on its own data.  Reporting the first
+    number alongside the second object is the whole point: a model is only as
+    trustworthy as the out-of-sample estimate attached to it.
+    """
+    import time as _time
+
+    from sklearn.ensemble import GradientBoostingClassifier
+
+    if len(samples) < 100:
+        raise ValueError(
+            f"only {len(samples)} samples; collect more before training anything"
+        )
+
+    wf = walk_forward(samples, n_folds=n_folds, profit_threshold=profit_threshold, seed=seed)
+
+    X = np.array([to_vector(s.features) for s in samples], dtype=float)
+    y = np.array([s.label(profit_threshold) for s in samples])
+    if len(np.unique(y)) < 2:
+        raise ValueError(
+            "every token in this capture has the same outcome; nothing to learn from"
+        )
+
+    estimator = GradientBoostingClassifier(
+        n_estimators=150, max_depth=3, learning_rate=0.05, subsample=0.8, random_state=seed
+    )
+    estimator.fit(X, y)
+
+    return TrainedModel(
+        estimator=estimator,
+        feature_names=list(FEATURE_NAMES),
+        profit_threshold=profit_threshold,
+        trained_on=len(samples),
+        positive_rate=float(y.mean()),
+        walk_forward_auc=wf.mean_auc,
+        fold_auc=list(wf.fold_auc),
+        decision_age=decision_age,
+        trained_at=_time.time(),
+        feature_importance=dict(zip(FEATURE_NAMES, estimator.feature_importances_.tolist())),
+    )
+
+
+class LiveModelStrategy(Strategy):
+    """Scores a live launch with a persisted model.
+
+    Unlike ``ModelStrategy``, which reads precomputed out-of-sample scores for
+    a backtest, this one holds a real estimator and is the only strategy in the
+    project that can form an opinion about a token it has never seen - which is
+    exactly what live trading requires and exactly why it must never be used to
+    produce a backtest number.
+    """
+
+    name = "live_model"
+
+    def __init__(self, model: TrainedModel, threshold: float = 0.5, size_sol: float = 0.25):
+        self.model = model
+        self.threshold = threshold
+        self.size_sol = size_sol
+
+    def decide(self, features: dict[str, float], mint: str = "") -> Decision:
+        score = self.model.score(features)
+        if score < self.threshold:
+            return Decision(enter=False, score=score, reason="below_threshold")
+        return Decision(enter=True, score=score, size_sol=self.size_sol, reason="model")

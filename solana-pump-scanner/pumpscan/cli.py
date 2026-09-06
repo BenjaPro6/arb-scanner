@@ -8,12 +8,15 @@
     pumpscan label        outcome distribution of a capture
     pumpscan validate     leakage audit + permutation test  <- run before believing anything
     pumpscan backtest     compare strategies on a capture
+    pumpscan train        fit a model on a capture and save it
+    pumpscan trade        run the bot on the live market, on paper
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 import typer
@@ -285,6 +288,154 @@ def backtest(
         "\nbefore acting on any of this, run `pumpscan validate`.",
         fg=typer.colors.YELLOW,
     )
+
+
+@app.command()
+def train(
+    log_dir: str = typer.Option("data/raw"),
+    out: str = typer.Option("data/model.pkl", help="Where to write the trained model."),
+    decision_age: float = typer.Option(10.0),
+    position: float = typer.Option(0.25),
+    folds: int = typer.Option(5),
+    profit_threshold: float = typer.Option(
+        1.30, help="Multiple a trade must clear, after costs, to count as a win."
+    ),
+) -> None:
+    """Fit a model on a capture and save it for live use."""
+    from .strategy.ml import train_final_model
+
+    timelines = _load(log_dir)
+    samples = build_samples(timelines, decision_age, position_sol=position)
+
+    try:
+        model = train_final_model(samples, profit_threshold, decision_age, folds)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    path = model.save(out)
+    typer.echo("\n" + model.summary())
+    typer.secho(f"\nsaved to {path}", fg=typer.colors.GREEN)
+
+    top = sorted(model.feature_importance.items(), key=lambda kv: -kv[1])[:8]
+    typer.secho("\nmost-used features:", bold=True)
+    for name, weight in top:
+        typer.echo(f"  {name:24s} {weight:.3f}")
+
+    if model.walk_forward_auc < 0.55:
+        typer.secho(
+            "\nThis model cannot tell winners from losers. Do not trade it - "
+            "collect more data or rethink the features.",
+            fg=typer.colors.RED,
+        )
+
+
+@app.command()
+def trade(
+    model_path: str = typer.Option("data/model.pkl", "--model", help="Trained model to use."),
+    strategy_name: str = typer.Option(
+        "model", "--strategy", help="model | rules | everything"
+    ),
+    minutes: float = typer.Option(0, help="Stop after this long; 0 runs until Ctrl-C."),
+    capital: float = typer.Option(10.0, help="Paper capital in SOL."),
+    position: float = typer.Option(0.25, help="Position size in SOL."),
+    max_concurrent: int = typer.Option(3),
+    decision_age: float = typer.Option(10.0),
+    threshold: float = typer.Option(0.5, help="Model score needed to enter."),
+    take_profit: float = typer.Option(3.0),
+    stop_loss: float = typer.Option(0.55),
+    trailing_stop: float = typer.Option(0.35),
+    max_hold: float = typer.Option(300.0),
+    log_dir: str = typer.Option("data/paper"),
+    refresh: float = typer.Option(2.0, help="Seconds between screen refreshes."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run the bot against the LIVE market, on paper. No wallet, no real orders."""
+    from .live.display import final_report, render
+    from .live.trader import PaperTrader, TraderConfig
+    from .sources.pumpportal import PumpPortalSource
+    from .strategy.ml import LiveModelStrategy, TrainedModel
+
+    _setup_logging(verbose)
+
+    if strategy_name == "model":
+        try:
+            model = TrainedModel.load(model_path)
+        except FileNotFoundError:
+            typer.secho(
+                f"no model at {model_path}. Run `pumpscan train` first, or use "
+                f"--strategy rules.",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(1) from None
+        typer.echo(model.summary() + "\n")
+        if model.walk_forward_auc < 0.55:
+            typer.secho(
+                "This model scored near chance out of sample. Running it on paper is "
+                "fine; running it with money would not be.\n",
+                fg=typer.colors.YELLOW,
+            )
+        strategy = LiveModelStrategy(model, threshold, position)
+    elif strategy_name == "rules":
+        strategy = RuleStrategy()
+    elif strategy_name == "everything":
+        strategy = BuyEverything(position)
+    else:
+        typer.secho(f"unknown strategy {strategy_name!r}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    config = TraderConfig(
+        decision_age=decision_age,
+        starting_capital_sol=capital,
+        position_sol=position,
+        max_concurrent=max_concurrent,
+        log_dir=log_dir,
+        db_path=f"{log_dir}.db",
+        trades_path=f"{log_dir}_trades.jsonl",
+    )
+    policy = ExitPolicy(
+        take_profit=take_profit,
+        stop_loss=stop_loss,
+        trailing_stop=trailing_stop,
+        max_hold=max_hold,
+    )
+
+    trader = PaperTrader(
+        PumpPortalSource(), strategy, config, policy, ExecutionModel()
+    )
+
+    async def _run() -> None:
+        import signal
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, trader.stop)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+        task = asyncio.create_task(trader.run())
+        deadline = (minutes * 60) if minutes > 0 else None
+        started = time.monotonic()
+
+        while not task.done():
+            await asyncio.sleep(refresh)
+            if not verbose:
+                typer.echo("\033[2J\033[H" + render(trader.portfolio, trader.stats))
+            if deadline is not None and time.monotonic() - started >= deadline:
+                trader.stop()
+                break
+        await task
+
+    typer.secho(
+        f"paper trading live pump.fun with {strategy.name}; Ctrl-C to stop\n",
+        fg=typer.colors.GREEN,
+    )
+    asyncio.run(_run())
+    typer.echo(final_report(trader.portfolio, trader.stats))
+    typer.secho(f"\ntrades written to {config.trades_path}", fg=typer.colors.GREEN)
+    typer.secho(f"capture written to {config.log_dir} - backtest it with:", fg=typer.colors.GREEN)
+    typer.echo(f"  python -m pumpscan.cli validate --log-dir {config.log_dir}")
 
 
 def main() -> None:

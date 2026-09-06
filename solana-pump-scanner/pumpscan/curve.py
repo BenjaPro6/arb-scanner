@@ -90,15 +90,21 @@ class CurveState:
         return min(1.0, max(0.0, self.real_sol / GRADUATION_REAL_SOL))
 
     def value_of(self, token_amount: int) -> int:
-        """Lamports received for dumping ``token_amount`` right now, pre-fee.
+        """Lamports the curve would pay for ``token_amount`` right now, pre-fee.
 
         This is the honest mark-to-market of a position: not ``amount * price``
         but what the curve would actually pay, which is strictly less because
         selling walks the price down.
+
+        Valuation is not execution, so this deliberately ignores ``complete``.
+        A graduated curve cannot be traded, but the position it left you
+        holding is emphatically not worth zero - graduation is the *best*
+        outcome on this venue - and a valuation that raised or returned zero
+        there would write off every winner.
         """
         if token_amount <= 0:
             return 0
-        return quote_sell(self, token_amount).sol_out_gross
+        return _sell_gross(self, token_amount)
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,30 @@ def quote_buy(state: CurveState, sol_in: int, fee_bps: int = DEFAULT_FEE_BPS) ->
     return TradeResult(state=new_state, sol_in_net=net, tokens_out=tokens_out, fee=fee)
 
 
+def _sell_gross(state: CurveState, tokens_in: int) -> int:
+    """Gross lamports the curve returns for ``tokens_in``, before fees.
+
+    Pure arithmetic with no state guard, so it can serve both execution (which
+    checks ``complete`` first) and valuation (which must not).
+    """
+    gross = state.virtual_sol * tokens_in // (state.virtual_tokens + tokens_in)
+    # You cannot extract more real SOL than the curve is actually holding.
+    return min(gross, state.real_sol)
+
+
+def sell_value(state: CurveState, tokens_in: int, fee_bps: int = DEFAULT_FEE_BPS) -> int:
+    """Net lamports a position is worth, fees included, graduated or not.
+
+    Use this to mark a position or to close one out at the end of a window.
+    Use ``quote_sell`` when you are modelling an actual trade against a live
+    curve, since that one correctly refuses a graduated pool.
+    """
+    if tokens_in <= 0:
+        return 0
+    gross = _sell_gross(state, tokens_in)
+    return gross - _fee(gross, fee_bps)
+
+
 def quote_sell(state: CurveState, tokens_in: int, fee_bps: int = DEFAULT_FEE_BPS) -> TradeResult:
     """Quote selling ``tokens_in`` base units back into the curve."""
     if tokens_in <= 0:
@@ -172,9 +202,7 @@ def quote_sell(state: CurveState, tokens_in: int, fee_bps: int = DEFAULT_FEE_BPS
     if state.complete:
         raise CurveError("curve has already graduated; trade on the AMM instead")
 
-    sol_out_gross = state.virtual_sol * tokens_in // (state.virtual_tokens + tokens_in)
-    # You cannot extract more real SOL than the curve is actually holding.
-    sol_out_gross = min(sol_out_gross, state.real_sol)
+    sol_out_gross = _sell_gross(state, tokens_in)
     fee = _fee(sol_out_gross, fee_bps)
 
     new_state = replace(
