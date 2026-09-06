@@ -62,6 +62,17 @@ Python 3.11+.
 
 ## Uso
 
+### 0. Comprobar que llegás al mercado real
+
+```bash
+python -m pumpscan.cli doctor
+```
+
+Se conecta al feed en vivo y te imprime lanzamientos **reales** de Solana a
+medida que van apareciendo, con el símbolo, la compra del dev y el market cap.
+Treinta segundos y sabés si tu máquina puede hacer el trabajo. Si no puede, te
+dice que el problema es de red y no del código.
+
 ### 1. Capturar el mercado (corré esto en tu máquina, necesita red)
 
 ```bash

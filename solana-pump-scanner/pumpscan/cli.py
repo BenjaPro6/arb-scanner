@@ -1,5 +1,6 @@
 """Command line for the whole pipeline.
 
+    pumpscan doctor       check this machine can reach the live venue  <- run this first
     pumpscan collect      capture the live market (run this on your own machine)
     pumpscan simulate     generate a synthetic capture, for development offline
     pumpscan reindex      rebuild the SQLite index from the raw log
@@ -51,6 +52,22 @@ def _load(log_dir: str) -> list:
     timelines = list(iter_timelines(events))
     typer.echo(f"loaded {len(events)} events across {len(timelines)} tokens with a known launch")
     return timelines
+
+
+@app.command()
+def doctor(
+    seconds: float = typer.Option(30.0, help="How long to watch the live feed."),
+    show: int = typer.Option(10, help="How many launches to print as they arrive."),
+) -> None:
+    """Check this machine can reach the live pump.fun feed. Run this first."""
+    from .doctor import run_check
+
+    typer.echo(f"watching the live feed for {seconds:.0f}s; real launches appear below\n")
+    report = run_check(seconds, show)
+    colour = typer.colors.GREEN if report.healthy else typer.colors.RED
+    typer.secho("\n" + report.summary(), fg=colour)
+    if not report.healthy:
+        raise typer.Exit(1)
 
 
 @app.command()
