@@ -9,6 +9,51 @@ temprana predice algo — o si lo que parecía una señal era ruido.
 
 ---
 
+## Arranque rápido
+
+Necesitás **Python 3.11 o más nuevo** y conexión a internet sin proxy que
+bloquee websockets.
+
+```bash
+# 1. Traer el código
+git clone -b claude/nuevo-proyecto-ebxwg9 https://github.com/BenjaPro6/arb-scanner.git
+cd arb-scanner/solana-pump-scanner
+
+# 2. Entorno aislado e instalación
+python3 -m venv .venv
+source .venv/bin/activate          # en Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. ¿Llego al mercado real? (30 segundos)
+python -m pumpscan.cli doctor
+```
+
+Si el paso 3 imprime lanzamientos con símbolo y market cap, estás listo. Ahora:
+
+```bash
+# 4. Capturar datos reales. Dejalo corriendo VARIOS DÍAS.
+python -m pumpscan.cli collect
+
+# 5. Con la captura hecha, ver qué pasó y si hay señal
+python -m pumpscan.cli label
+python -m pumpscan.cli validate
+
+# 6. Entrenar y operar en papel
+python -m pumpscan.cli train --out data/model.pkl
+python -m pumpscan.cli trade --model data/model.pkl
+```
+
+Todos los comandos cortan limpio con Ctrl-C sin perder datos.
+
+Para probar la maquinaria ahora mismo, sin esperar la captura:
+
+```bash
+python -m pumpscan.cli simulate --tokens 1200
+python -m pumpscan.cli backtest --log-dir data/sim
+```
+
+---
+
 ## Por qué esto y no un sniper directo
 
 Un bot que compra y vende se escribe en una tarde. El problema es que no tenés
